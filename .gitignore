@@ -228,7 +228,7 @@ temp/
 *.orig
 *.rej
 
-# ── Build / output directories ────────────────────────────────────────────────
+# ── Build / output directories ─────────────────────────────────────────────
 bin/
 obj/
 output/
@@ -238,3 +238,15 @@ Debug/
 Release/
 x64/
 x86/
+
+# ── agent-postit runtime / smoke ──────────────────────────────────────────────
+# Local notes roots created when dogfooding in-repo. Don't commit them;
+# point --root / $POSTIT_ROOT somewhere outside the repo in real use.
+.agent-postit/
+notes/
+data/
+smoke_root/
+smoke*.out
+smoke*.log
+smoke*.sh
+smoke_pod_root*/
