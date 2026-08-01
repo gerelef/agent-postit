@@ -11,6 +11,8 @@ which carry `.code` + `.message` for serialization to a `ToolError`.
 from __future__ import annotations
 
 import os
+import threading
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -53,6 +55,79 @@ _TOPIC_PREVIEW_LEN = 80
 
 # Regex to popular ATX-ish open fences handled in sections.py — reused only
 # where this module parses bodies (nowhere). Kept out for now.
+
+# --------------------------------------------------------------------------- #
+# Per-note write lock (single-process)                                         #
+# --------------------------------------------------------------------------- #
+#
+# HTTP transport means many concurrent tool calls against the same root.
+# Per-note integrity is already protected by `_atomic_write_text` (tmp +
+# fsync + os.replace), but multi-step ops (`update_body` append is
+# read-modify-write, `postit.rename` touches two names, `postit.create`
+# has a check-then-write race) need a process-wide critical section. We
+# use `threading.RLock` keyed by `f"{normalized_dir}/{lowercase_name}"`;
+# reads are lock-free (atomic replace guarantees they see a complete
+# file, old or new). Single-instance service → one process owns all
+# locks; no cross-process locking is attempted. See
+# `docs/http-migration.md` §4 for the rationale.
+
+_NOTE_LOCKS: dict[str, threading.RLock] = {}
+_LOCKS_GUARD = threading.Lock()
+
+
+def _lock_for(key: str) -> threading.RLock:
+    """Get-or-create the `RLock` for a single note identity.
+
+    Locks are created lazily and never evicted — see §4.5. Names are short
+    and bounded by the 1 MiB body cap on note creation, so unbounded growth
+    is not a real concern; an LRU cap can be added later if it ever is.
+    """
+    with _LOCKS_GUARD:
+        lk = _NOTE_LOCKS.get(key)
+        if lk is None:
+            lk = threading.RLock()
+            _NOTE_LOCKS[key] = lk
+        return lk
+
+
+@contextmanager
+def _with_note_locks(*keys: str):
+    """Acquire one or more note locks in a stable order.
+
+    Keys are acquired in sorted order to avoid self-deadlock (e.g. two
+    concurrent renames `A→B` and `B→A`). All locks are reentrant so a
+    tool that legitimately re-enters its own critical section doesn't
+    deadlock.
+    """
+    ordered = sorted(set(keys))
+    with ExitStack() as stack:
+        for key in ordered:
+            stack.enter_context(_lock_for(key))
+        yield
+
+
+def _note_lock_key(dir_: str, name: str) -> str:
+    """Lock key for a postit. `dir_` must already be normalized; `name` must
+    already be validated (lowercased). Root dir is `''` so a root note
+    `foo` locks on `'/foo'` — joining with `/` keeps it visually distinct
+    from a topic note `topic/foo` → `'topic/foo'`. Strings are compared
+    as plain bytes; the leading slash on root is fine because topic
+    paths never start with one (normalize_dir strips it)."""
+    if dir_ == ROOT:
+        return f"/{name}"
+    return f"{dir_}/{name}"
+
+
+def _topic_lock_key(dir_: str) -> str:
+    """Lock key for a topic's `TOPIC.md`. Topic `TOPIC` is the reserved
+    basename in uppercase; a postit note never locks on this key because
+    `validate_name` rejects `TOPIC`/`topic`/etc. case-insensitively."""
+    if dir_ == ROOT:
+        # Root has no TOPIC.md, but the key is never acquired for root —
+        # topic verbs refuse root before locking. Defend against a coding
+        # mistake by giving root a non-colliding key anyway.
+        return "/TOPIC"
+    return f"{dir_}/{TOPIC_BASENAME}"
 
 # --------------------------------------------------------------------------- #
 # Errors                                                                      #
@@ -270,18 +345,23 @@ def topic_create(root: Path, dir: str | None, description: str) -> TopicInfo:
             f"parent topic {parent!r} does not exist; call topic.create on it first",
         )
 
-    target_dir = _dir_path(root, d)
-    if target_dir.exists():
-        raise StoreError("dir_exists", f"dir {d!r} already exists")
+    # Serialize concurrent `topic.create` on the same dir name: a mkdir
+    # check-then-create race would otherwise let two callers both pass
+    # the `target_dir.exists()` check and both attempt `mkdir`, one of
+    # which would raise `FileExistsError` instead of our `dir_exists`.
+    with _with_note_locks(_topic_lock_key(d)):
+        target_dir = _dir_path(root, d)
+        if target_dir.exists():
+            raise StoreError("dir_exists", f"dir {d!r} already exists")
 
-    target_dir.mkdir(parents=False)
-    # `parents=False` would fail if intermediate dirs are missing — but our
-    # parent check above already rejected that case for nested topics. Defensive
-    # in case caller tampered paths. Use mkdir without parents to honour the
-    # "create one level at a time" rule.
-    topic_path = _topic_path(root, d)
-    _atomic_write_text(topic_path, description)
-    size, mtime = _stat_size_mtime(topic_path)
+        target_dir.mkdir(parents=False)
+        # `parents=False` would fail if intermediate dirs are missing — but our
+        # parent check above already rejected that case for nested topics. Defensive
+        # in case caller tampered paths. Use mkdir without parents to honour the
+        # "create one level at a time" rule.
+        topic_path = _topic_path(root, d)
+        _atomic_write_text(topic_path, description)
+        size, mtime = _stat_size_mtime(topic_path)
     return TopicInfo(dir=d, description=description, mtime=mtime, size=size)
 
 
@@ -307,8 +387,9 @@ def topic_write(root: Path, dir: str | None, description: str) -> TopicInfo:
     if not target_dir.is_dir():
         raise StoreError("dir_missing", f"dir {d!r} does not exist; call topic.create first")
     tp = _topic_path(root, d)
-    _atomic_write_text(tp, description)
-    size, mtime = _stat_size_mtime(tp)
+    with _with_note_locks(_topic_lock_key(d)):
+        _atomic_write_text(tp, description)
+        size, mtime = _stat_size_mtime(tp)
     return TopicInfo(dir=d, description=description, mtime=mtime, size=size)
 
 
@@ -341,10 +422,14 @@ def postit_create(root: Path, name: str, body: str, dir: str | None = None) -> N
         raise StoreError("too_large", "body exceeds 1 MiB cap")
     _require_topic_for_write(root, d)
     target = _note_path(root, d, n)
-    if target.exists():
-        raise StoreError("already_exists", f"note {n!r} already exists in {d!r}")
-    _atomic_write_text(target, body)
-    size, mtime = _stat_size_mtime(target)
+    # Hold the per-note lock across the check-then-write so two concurrent
+    # `postit.create` of the same name can't both pass the existence check
+    # and both succeed — exactly one wins, the rest get `already_exists`.
+    with _with_note_locks(_note_lock_key(d, n)):
+        if target.exists():
+            raise StoreError("already_exists", f"note {n!r} already exists in {d!r}")
+        _atomic_write_text(target, body)
+        size, mtime = _stat_size_mtime(target)
     return NoteInfo(name=n, dir=d, body=body, mtime=mtime, size=size)
 
 
@@ -362,20 +447,26 @@ def postit_update_body(
     if not isinstance(content, str):
         raise StoreError("invalid_path", "content must be a string")
     target = _note_path(root, d, n)
-    if not target.is_file():
-        raise StoreError("not_found", f"note {n!r} not found in {d!r}")
-    existing = _read_text(target) if target.stat().st_size > 0 else ""
-    if mode == "overwrite":
-        new_body = content
-    else:
-        if existing and not existing.endswith("\n"):
-            new_body = existing + "\n" + content
+    # The append mode is read-modify-write: without the per-note lock two
+    # concurrent appenders would both read the same body, both append, and
+    # one would lose its append on the losing `os.replace`. The lock makes
+    # appends serial w.r.t. each other and w.r.t. create/rename/delete on
+    # the same identity.
+    with _with_note_locks(_note_lock_key(d, n)):
+        if not target.is_file():
+            raise StoreError("not_found", f"note {n!r} not found in {d!r}")
+        existing = _read_text(target) if target.stat().st_size > 0 else ""
+        if mode == "overwrite":
+            new_body = content
         else:
-            new_body = existing + content
-    if _byte_len(new_body) > MAX_BODY_BYTES:
-        raise StoreError("too_large", "resulting body exceeds 1 MiB cap")
-    _atomic_write_text(target, new_body)
-    size, mtime = _stat_size_mtime(target)
+            if existing and not existing.endswith("\n"):
+                new_body = existing + "\n" + content
+            else:
+                new_body = existing + content
+        if _byte_len(new_body) > MAX_BODY_BYTES:
+            raise StoreError("too_large", "resulting body exceeds 1 MiB cap")
+        _atomic_write_text(target, new_body)
+        size, mtime = _stat_size_mtime(target)
     return NoteInfo(name=n, dir=d, body=new_body, mtime=mtime, size=size)
 
 
@@ -385,14 +476,20 @@ def postit_rename(root: Path, name: str, new_name: str, dir: str | None = None) 
     d = _norm_dir(dir)
     src = _note_path(root, d, n)
     dst = _note_path(root, d, new_n)
-    if not src.is_file():
-        raise StoreError("not_found", f"note {n!r} not found in {d!r}")
-    if new_n == n:
-        raise StoreError("no_op", "new_name equals name; nothing to rename")
-    if dst.exists():
-        raise StoreError("already_exists", f"note {new_n!r} already exists in {d!r}")
-    os.replace(src, dst)
-    size, mtime = _stat_size_mtime(dst)
+    # Acquire both src and dst note locks in sorted order so two
+    # simultaneous renames `A→B` and `B→A` can't self-deadlock. The
+    # `no_op` (src == dst) and `already_exists` (dst present) checks both
+    # run inside the critical section so the rename is atomic w.r.t.
+    # concurrent `create`/`update_body`/`delete` on either name.
+    with _with_note_locks(_note_lock_key(d, n), _note_lock_key(d, new_n)):
+        if not src.is_file():
+            raise StoreError("not_found", f"note {n!r} not found in {d!r}")
+        if new_n == n:
+            raise StoreError("no_op", "new_name equals name; nothing to rename")
+        if dst.exists():
+            raise StoreError("already_exists", f"note {new_n!r} already exists in {d!r}")
+        os.replace(src, dst)
+        size, mtime = _stat_size_mtime(dst)
     return NoteInfo(name=new_n, dir=d, body=_read_text(dst), mtime=mtime, size=size)
 
 
@@ -400,9 +497,10 @@ def postit_delete(root: Path, name: str, dir: str | None = None) -> None:
     n = _validate_name(name)
     d = _norm_dir(dir)
     target = _note_path(root, d, n)
-    if not target.is_file():
-        raise StoreError("not_found", f"note {n!r} not found in {d!r}")
-    os.remove(target)
+    with _with_note_locks(_note_lock_key(d, n)):
+        if not target.is_file():
+            raise StoreError("not_found", f"note {n!r} not found in {d!r}")
+        os.remove(target)
     # Intentionally do NOT rmdir even if dir is now empty (locked decision).
 
 

@@ -1,12 +1,13 @@
 [project]
 name = "agent-postit"
 version = "0.1.0"
-description = "Local stdio MCP server: agent post-it memory on the filesystem"
+description = "Local HTTP MCP server (loopback): agent post-it memory on the filesystem"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 dependencies = [
   "mcp>=1.2",
+  "uvicorn>=0.30",
 ]
 
 [project.scripts]

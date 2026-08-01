@@ -11,12 +11,16 @@ instance pointed at a tmp `POSTIT_ROOT`.
 
 from __future__ import annotations
 
+import asyncio
+import functools
+import time
 from pathlib import Path
-from typing import Any, Union
+from typing import Union
 
 from mcp.server.mcpserver import MCPServer
 
 from . import models as M
+from .log import ToolLogger
 from .paths import PathError
 from .store import (
     StoreError,
@@ -62,11 +66,95 @@ def _ok() -> M.OkOut:
 
 
 # --------------------------------------------------------------------------- #
+# Async-wrapper helpers                                                        #
+# --------------------------------------------------------------------------- #
+#
+# The store layer is synchronous (os.scandir / open / Path.stat) and holds
+# per-note `threading.RLock`s for write-path tools. Calling these sync fns
+# directly inside an `async def` tool fn would block the event-loop thread
+# for the duration of every tool call — fine under stdio (one call at a
+# time), wrong under HTTP (many concurrent calls). We push every store call
+# through `asyncio.to_thread` so it runs on the default thread pool, where
+# `threading.RLock` is the right primitive and the event loop stays free to
+# serve other sessions. See `docs/http-migration.md` §4.4.
+
+
+def _t(fn, *args, **kwargs):
+    return asyncio.to_thread(fn, *args, **kwargs)
+
+
+# --------------------------------------------------------------------------- #
+# Tool-call instrumentation (structured log)                                  #
+# --------------------------------------------------------------------------- #
+#
+# `Tool.fn` is a plain pydantic field on the SDK's `Tool` model and is read
+# again on every `call_tool`, so post-registration we can swap it for a
+# wrapper that records the call and still delegates to the original. This
+# keeps the verbose per-tool bodies unchanged and avoids re-declaring the
+# input/output schemas — `Tool.from_function` already pinned those at
+# registration time and the wrapper carries the same signature via
+# `functools.wraps`. The schema is not re-derived from `fn` afterward.
+#
+# Outcome detection: our tool fns *return* `M.ToolError` on the error path
+# rather than raising (README L661-664). The wrapper treats either a
+# `ToolError` return or an escaped exception as `outcome == "error"`.
+
+
+def _wrap_logged(tool_name: str, fn, logger: ToolLogger):
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        # The SDK calls tool fns as `fn(arg=<pydantic model>)` (see
+        # `FuncMetadata.call_fn_with_arg_validation`): each declared
+        # parameter becomes a kwarg whose value is the validated input
+        # model. Our tools take a single `arg` param, so the model lives
+        # at `kwargs["arg"]`; fall back to positional in case the SDK ever
+        # dispatches that way.
+        arg_obj = kwargs.get("arg") if kwargs else (args[0] if args else None)
+        d = getattr(arg_obj, "dir", None)
+        n = getattr(arg_obj, "name", None)
+        t0 = time.perf_counter()
+        outcome = "ok"
+        error_code: str | None = None
+        try:
+            result = await fn(*args, **kwargs)
+            if isinstance(result, M.ToolError):
+                outcome = "error"
+                error_code = result.code
+            return result
+        except Exception:
+            outcome = "error"
+            error_code = "exception"
+            raise
+        finally:
+            logger.log(
+                tool=tool_name,
+                dir=d,
+                name=n,
+                outcome=outcome,
+                duration_ms=(time.perf_counter() - t0) * 1000,
+                error_code=error_code if outcome == "error" else None,
+            )
+
+    return wrapper
+
+
+def _instrument(app: MCPServer, logger: ToolLogger) -> None:
+    # `app._tool_manager._tools` is the SDK's name->Tool registry. Patching
+    # each Tool's `fn` is safe because `Tool.run` reads `self.fn` fresh on
+    # every call and the input/output schemas were already locked in by
+    # `from_function` at registration.
+    for name, tool in app._tool_manager._tools.items():
+        tool.fn = _wrap_logged(name, tool.fn, logger)
+
+
+# --------------------------------------------------------------------------- #
 # Server factory                                                               #
 # --------------------------------------------------------------------------- #
 
 
-def build_server(root: Path) -> MCPServer:
+def build_server(root: Path, *, logger: ToolLogger | None = None) -> MCPServer:
+    if logger is None:
+        logger = ToolLogger.from_env()
     app = MCPServer(name="agent-postit", version="0.1.0")
 
     # --- Topic verbs --------------------------------------------------------
@@ -74,7 +162,7 @@ def build_server(root: Path) -> MCPServer:
     async def topic_create(arg: M.TopicCreateIn) -> Union[M.TopicOut, M.ToolError]:
         try:
             from . import store as _store
-            return _topic(_store.topic_create(root, arg.dir, arg.description))
+            return _topic(await _t(_store.topic_create, root, arg.dir, arg.description))
         except (StoreError, PathError) as e:
             return _error(e)
 
@@ -82,7 +170,7 @@ def build_server(root: Path) -> MCPServer:
     async def topic_read(arg: M.TopicReadIn) -> Union[M.TopicReadOut, M.ToolError]:
         try:
             from . import store as _store
-            info = _store.topic_read(root, arg.dir)
+            info = await _t(_store.topic_read, root, arg.dir)
             return M.TopicReadOut(
                 dir=arg.dir,
                 topic=_topic(info) if info is not None else None,
@@ -94,7 +182,7 @@ def build_server(root: Path) -> MCPServer:
     async def topic_write(arg: M.TopicWriteIn) -> Union[M.TopicOut, M.ToolError]:
         try:
             from . import store as _store
-            return _topic(_store.topic_write(root, arg.dir, arg.description))
+            return _topic(await _t(_store.topic_write, root, arg.dir, arg.description))
         except (StoreError, PathError) as e:
             return _error(e)
 
@@ -103,7 +191,7 @@ def build_server(root: Path) -> MCPServer:
     async def postit_create(arg: M.PostitCreateIn) -> Union[M.PostitOut, M.ToolError]:
         try:
             from . import store as _store
-            return _note(_store.postit_create(root, arg.name, arg.body, dir=arg.dir))
+            return _note(await _t(_store.postit_create, root, arg.name, arg.body, arg.dir))
         except (StoreError, PathError) as e:
             return _error(e)
 
@@ -113,12 +201,13 @@ def build_server(root: Path) -> MCPServer:
         try:
             from . import store as _store
             return _note(
-                _store.postit_update_body(
+                await _t(
+                    _store.postit_update_body,
                     root,
                     arg.name,
                     arg.content,
-                    dir=arg.dir,
-                    mode=arg.mode,
+                    arg.dir,
+                    arg.mode,
                 )
             )
         except (StoreError, PathError) as e:
@@ -128,7 +217,7 @@ def build_server(root: Path) -> MCPServer:
     async def postit_rename(arg: M.PostitRenameIn) -> Union[M.PostitOut, M.ToolError]:
         try:
             from . import store as _store
-            return _note(_store.postit_rename(root, arg.name, arg.new_name, dir=arg.dir))
+            return _note(await _t(_store.postit_rename, root, arg.name, arg.new_name, arg.dir))
         except (StoreError, PathError) as e:
             return _error(e)
 
@@ -136,7 +225,7 @@ def build_server(root: Path) -> MCPServer:
     async def postit_delete(arg: M.PostitDeleteIn) -> Union[M.OkOut, M.ToolError]:
         try:
             from . import store as _store
-            _store.postit_delete(root, arg.name, dir=arg.dir)
+            await _t(_store.postit_delete, root, arg.name, arg.dir)
             return _ok()
         except (StoreError, PathError) as e:
             return _error(e)
@@ -145,7 +234,7 @@ def build_server(root: Path) -> MCPServer:
     async def postit_read(arg: M.PostitReadIn) -> Union[M.PostitOut, M.ToolError]:
         try:
             from . import store as _store
-            return _note(_store.postit_read(root, arg.name, dir=arg.dir))
+            return _note(await _t(_store.postit_read, root, arg.name, arg.dir))
         except (StoreError, PathError) as e:
             return _error(e)
 
@@ -154,7 +243,14 @@ def build_server(root: Path) -> MCPServer:
     async def postit_read_section(arg: M.PostitReadSectionIn) -> Union[M.SectionOut, M.ToolError]:
         try:
             from . import store as _store
-            r = _store.postit_read_section(root, arg.name, arg.heading, dir=arg.dir, level=arg.level)
+            r = await _t(
+                _store.postit_read_section,
+                root,
+                arg.name,
+                arg.heading,
+                arg.dir,
+                arg.level,
+            )
             return M.SectionOut(name=r.name, dir=r.dir, heading=r.heading, level=r.level, body=r.body)
         except (StoreError, PathError) as e:
             return _error(e)
@@ -164,7 +260,7 @@ def build_server(root: Path) -> MCPServer:
     async def postit_read_lines(arg: M.PostitReadLinesIn) -> Union[M.LinesOut, M.ToolError]:
         try:
             from . import store as _store
-            r = _store.postit_read_lines(root, arg.name, arg.start, arg.end, dir=arg.dir)
+            r = await _t(_store.postit_read_lines, root, arg.name, arg.start, arg.end, arg.dir)
             return M.LinesOut(
                 name=r.name, dir=r.dir, start=r.start, end=r.end,
                 total_lines=r.total_lines, lines=r.lines,
@@ -178,7 +274,13 @@ def build_server(root: Path) -> MCPServer:
     async def postit_ls(arg: M.PostitLsIn) -> Union[M.LsOut, M.ToolError]:
         try:
             from . import store as _store
-            out = _store.postit_ls(root, dir=arg.dir, name=arg.name, recursive=arg.recursive)
+            out = await _t(
+                _store.postit_ls,
+                root,
+                arg.dir,
+                arg.name,
+                arg.recursive,
+            )
             if isinstance(out, LsNoteModeResult):
                 return M.LsOut(
                     note_mode=M.LsNoteModeOut(
@@ -196,13 +298,14 @@ def build_server(root: Path) -> MCPServer:
               description="Regex search across postit names and/or bodies (grep-like).")
     async def postit_search(arg: M.PostitSearchIn) -> Union[list[M.SearchHit], M.ToolError]:
         try:
-            hits = search_impl(
+            hits = await _t(
+                search_impl,
                 root,
                 arg.pattern,
-                scope=arg.scope,
-                dir=arg.dir,
-                recursive=arg.recursive,
-                limit=arg.limit,
+                arg.scope,
+                arg.dir,
+                arg.recursive,
+                arg.limit,
             )
             return [
                 M.SearchHit(
@@ -220,7 +323,7 @@ def build_server(root: Path) -> MCPServer:
               description="Return most-recently-modified postits (always recursive under dir).")
     async def postit_recent(arg: M.PostitRecentIn) -> Union[list[M.RecentItem], M.ToolError]:
         try:
-            items = recent_impl(root, limit=arg.limit, dir=arg.dir)
+            items = await _t(recent_impl, root, arg.limit, arg.dir)
             return [
                 M.RecentItem(path=i.path, name=i.name, mtime=i.mtime, size=i.size)
                 for i in items
@@ -228,6 +331,7 @@ def build_server(root: Path) -> MCPServer:
         except (StoreError, PathError) as e:
             return _error(e)
 
+    _instrument(app, logger)
     return app
 
 
@@ -241,7 +345,71 @@ def _ls_to_model(item):
     raise TypeError(f"unknown ls item: {type(item)!r}")
 
 
-def run(root: Path) -> None:
-    """Build the server pointed at `root` and run over stdio."""
+# --------------------------------------------------------------------------- #
+# HTTP app assembly: Streamable HTTP + /healthz                               #
+# --------------------------------------------------------------------------- #
+#
+# `streamable_http_app(...)` returns a Starlette app whose only route is the
+# MCP mount at `streamable_http_path` (we pass `/mcp`) and whose lifespan
+# starts the session-manager task group. We must serve *that* app directly
+# so the lifespan runs — wrapping it in an outer Starlette would skip the
+# inner's lifespan and crash with `RuntimeError: Task group is not
+# initialized. Make sure to use run().` at the first request. So we splice
+# a `/healthz` `Route` onto the inner app's router ahead of the MCP mount
+# and return the inner app unchanged. Route matching is declaration order,
+# so `/healthz` wins over the catch-all MCP route.
+#
+# `GET /healthz` returns `200` with body `"ok"`. No auth (see §3 of the
+# migration doc); loopback bind is the caller's responsibility.
+
+
+async def _healthz(request):
+    from starlette.responses import PlainTextResponse
+
+    return PlainTextResponse("ok", status_code=200)
+
+
+def build_http_app(root: Path, *, host: str = "127.0.0.1"):
+    """Build the full HTTP ASGI app: MCP at `/mcp` + liveness at `/healthz`.
+
+    Returns the Starlette instance produced by `streamable_http_app(...)`
+    with an extra `Route("/healthz", ...)` spliced onto its router ahead of
+    the MCP mount. Serve it directly with uvicorn so the inner lifespan
+    (session-manager task group) runs. Tests can drive it directly without
+    spawning a server.
+    """
+    from starlette.routing import Route
+
     app = build_server(root)
-    app.run(transport="stdio")
+    starlette_app = app.streamable_http_app(
+        streamable_http_path="/mcp",
+        json_response=True,
+        host=host,
+    )
+    # Prepend so /healthz matches first. `Starlette.router.routes` is the
+    # list the router iterates at request time.
+    starlette_app.router.routes.insert(0, Route("/healthz", _healthz, methods=["GET"]))
+    return starlette_app
+
+
+def run(root: Path, *, transport: str = "http", host: str = "127.0.0.1", port: int = 8000) -> None:
+    """Build the server pointed at `root` and run it over the chosen transport.
+
+    `transport="stdio"` is the retained fallback (one tool call at a time,
+    in-process). `transport="http"` (and its alias spellings) hosts the
+    Streamable HTTP server on `host:port` via uvicorn, using the SDK's
+    `streamable_http_app(json_response=True, ...)` Starlette mount with a
+    sibling `/healthz` route added (see `build_http_app`). No auth; loopback
+    bind is the responsibility of the caller (`__main__` defaults `host`
+    to `127.0.0.1`).
+    """
+    if transport == "stdio":
+        build_server(root).run(transport="stdio")
+        return
+    if transport in ("http", "streamable_http", "streamable-http"):
+        starlette_app = build_http_app(root, host=host)
+        import uvicorn
+
+        uvicorn.run(starlette_app, host=host, port=port, log_level="info")
+        return
+    raise SystemExit(f"unknown transport: {transport!r}")

@@ -1,0 +1,61 @@
+# agent-postit.container — rootless quadlet for podman + systemd --user
+#
+# Canonical deployment shape for this project: one container, loopback
+# only, bind-mounted data root, no auth, no TLS. Front it with a
+# TLS-terminating reverse proxy (nginx/caddy/traefik) if you want
+# remote reach.
+#
+# Install (user session):
+#   mkdir -p ~/.config/containers/systemd/ && cp -f contrib/agent-postit.container ~/.config/containers/systemd/
+#   systemctl --user daemon-reload
+#   systemctl --user start --now agent-postit.service
+#
+# Logs:
+#   journalctl --user -u agent-postit.service -f
+#
+# Edit the Image= line below to point at your own tag, e.g.
+# `agent-postit:dev` after you `podman build --format docker -t agent-postit:dev .`.
+# Everything else is meant to need no editing.
+#
+# Requires podman 4.4+ (quadlet generator) and the user systemd session.
+# A --user service is killed when your logsession ends *unless* you also
+# run `loginctl enable-linger $USER` once. Standard systemd caveat.
+
+[Unit]
+Description=agent-postit MCP server (rootless podman quadlet)
+Documentation=https://github.com/gerelef/agent-postit
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+Image=agent-postit:latest
+ContainerName=agent-postit
+# Host-exposure knob. The `127.0.0.1:` prefix is the loopback guarantee —
+# do not drop it unless you intend to expose the port to other hosts
+# (and have a reverse proxy with auth in front).
+PublishPort=127.0.0.1:8000:8000
+# Data root. %h expands to the user's home dir under systemd.
+Volume=%h/.agent-postit:/data:Z
+Environment=POSTIT_ROOT=/data
+Environment=POSTIT_TRANSPORT=http
+# POSTIT_HOST=0.0.0.0 binds the listener *inside the container* netns.
+# podman's published-port proxy reaches the container via its veth IP,
+# not container-loopback — so binding 127.0.0.1 inside the container
+# manifests as `connection reset` on the host. Container-internal bind
+# is 0.0.0.0; host publish is 127.0.0.1. Two distinct layers.
+Environment=POSTIT_HOST=0.0.0.0
+Environment=POSTIT_PORT=8000
+# Rely on the HEALTHCHECK baked into the image. Quadlet has no separate
+# health field; the container's health status shows up in
+# `systemctl --user status agent-postit` / `podman ps`.
+
+[Service]
+Restart=on-failure
+RestartSec=2
+TimeoutStartSec=30
+TimeoutStopSec=15
+
+# `WantedBy=default.target` makes `systemctl --user enable` wire the
+# generated unit into the default user session target.
+[Install]
+WantedBy=default.target
