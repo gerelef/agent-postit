@@ -68,7 +68,12 @@ def _compile(pattern: str) -> re.Pattern[str]:
 
 
 def _is_postit_filename(entry_name: str) -> bool:
-    return entry_name.endswith(NOTE_SUFFIX) and entry_name != TOPIC_FILENAME
+    """Postit = lowercase `.md` suffix (case-sensitive) and not a topic marker
+    (case-insensitive skip: `Topic.md` / `TOPIC.md` are marker files).
+    A hand-created `Foo.MD` on disk is foreign and skipped."""
+    if not entry_name.endswith(NOTE_SUFFIX):
+        return False
+    return entry_name.lower() != TOPIC_FILENAME.lower()
 
 
 def _rel_path(dir_rel: str, name: str) -> str:

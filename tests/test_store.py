@@ -1,3 +1,5 @@
+import os
+
 import pytest
 from pathlib import Path
 
@@ -129,6 +131,32 @@ class TestPostitCreate:
         store.postit_create(root, "rootnote", "body", dir=".")
         assert (root / "rootnote.md").is_file()
 
+    def test_case_insensitive_name_folds_to_lowercase(self, root: Path):
+        # any case is folded on the way in; the on-disk filename is lowercase.
+        store.postit_create(root, "MixedCase", "body", dir=".")
+        assert (root / "mixedcase.md").is_file()
+        assert not (root / "MixedCase.md").exists()
+
+    def test_case_insensitive_round_trip(self, root: Path):
+        # Create with one case, read/list/delete with another — all hit the
+        # same on-disk file because every op lowercases the name first.
+        store.postit_create(root, "Recall", "body", dir=".")
+        info = store.postit_read(root, "RECALL", dir=".")
+        assert info.body == "body"
+        listing = store.postit_ls(root, dir=".")
+        assert any(it.name == "recall" for it in listing)
+        store.postit_delete(root, "recall", dir=".")
+        with pytest.raises(StoreError) as exc:
+            store.postit_read(root, "Recall", dir=".")
+        assert exc.value.code == "not_found"
+
+    def test_case_insensitive_already_exists(self, root: Path):
+        store.postit_create(root, "Foo", "a", dir=".")
+        # second create with different case must collide (same folded name).
+        with pytest.raises(StoreError) as exc:
+            store.postit_create(root, "foo", "b", dir=".")
+        assert exc.value.code == "already_exists"
+
     def test_dir_missing(self, root: Path):
         with pytest.raises(StoreError) as exc:
             store.postit_create(root, "note", "body", dir="nope")
@@ -213,6 +241,49 @@ class TestPostitUpdateBody:
             store.postit_update_body(root, "n", big, dir="t1", mode="append")
         assert exc.value.code == "too_large"
 
+    def test_atomic_write_leaves_no_tmp(self, root: Path):
+        """`_atomic_write_text` must clean up its tmp file on success."""
+        _topic(root, "t1")
+        store.postit_create(root, "n", "body", dir="t1")
+        note = root / "t1" / "n.md"
+        # No stray tmp files around the note after a write.
+        store.postit_update_body(root, "n", "body2", dir="t1", mode="overwrite")
+        siblings = list(note.parent.iterdir())
+        assert not any(name.endswith(".agentpostit.tmp") for name in
+                       (p.name for p in siblings))
+
+    def test_atomic_write_cleans_tmp_on_failure(self, root: Path, monkeypatch):
+        """On a raised error mid-write, tmp unlink still attempted."""
+        _topic(root, "t1")
+        store.postit_create(root, "n", "body", dir="t1")
+        note = root / "t1" / "n.md"
+        # Force os.replace to blow up so the except branch runs.
+        real_replace = store.os.replace
+        def boom(src, dst):
+            raise OSError("simulated")
+        monkeypatch.setattr(store.os, "replace", boom)
+        with pytest.raises(OSError):
+            store._atomic_write_text(note, "new body")
+        # tmp should have been unlinked (best-effort) by the cleanup branch.
+        siblings = list(note.parent.iterdir())
+        assert not any(name.endswith(".agentpostit.tmp") for name in
+                       (p.name for p in siblings))
+        # Original body untouched.
+        assert note.read_text() == "body"
+        monkeypatch.setattr(store.os, "replace", real_replace)
+
+    def test_fsync_helpers_do_not_raise_on_invalid_fd(self, tmp_path: Path):
+        """`_fsync_fd` swallows OSError on closed/unsupported fds."""
+        fd = os.open(str(tmp_path / "x"), os.O_CREAT | os.O_WRONLY)
+        os.close(fd)
+        # fd now closed → fsync raises OSError; helper must swallow.
+        store._fsync_fd(fd)  # should not raise
+
+    def test_fsync_dir_swallows_errors(self, tmp_path: Path):
+        """`_fsync_dir` is best-effort and must not raise on normal dirs."""
+        store._fsync_dir(tmp_path / "nonexistent")  # parent missing → noop
+        store._fsync_dir(tmp_path)  # valid dir → fsync (no assertion)
+
 
 # --------------------------------------------------------------------------- #
 # postit.rename                                                               #
@@ -276,6 +347,13 @@ class TestPostitDelete:
         # locked decision: dir + TOPIC.md survive empty
         assert (root / "t1").is_dir()
         assert (root / "t1" / "TOPIC.md").is_file()
+
+    def test_case_insensitive_delete_round_trip(self, root: Path):
+        _topic(root, "t1")
+        store.postit_create(root, "MixedCase", "body", dir="t1")
+        assert (root / "t1" / "mixedcase.md").is_file()
+        store.postit_delete(root, "MIXEDCASE", dir="t1")
+        assert not (root / "t1" / "mixedcase.md").exists()
 
     def test_redelete_not_found(self, root: Path):
         _topic(root, "t1")

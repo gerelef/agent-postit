@@ -42,6 +42,18 @@ class TestNormalizeStrip:
         assert normalize_dir("a/./b") == "a/b"
 
 
+class TestNormalizeLowercases:
+    def test_single_component(self):
+        assert normalize_dir("Foo") == "foo"
+
+    def test_nested_components(self):
+        assert normalize_dir("/Projects/Remember-Me/") == "projects/remember-me"
+
+    def test_mixed_case_preserved_in_original_not_normalized(self):
+        # We never preserve case; callers may pass any case and we fold it.
+        assert normalize_dir("AbC/DeF") == "abc/def"
+
+
 class TestNormalizeRejects:
     def test_dotdot(self):
         with pytest.raises(InvalidPathError):
@@ -69,14 +81,19 @@ class TestValidateNameAccept:
         assert validate_name("foo") == "foo"
 
     def test_with_spaces(self):
-        assert validate_name("Foo Bar") == "Foo Bar"
+        assert validate_name("Foo Bar") == "foo bar"
 
     def test_with_dot_inside(self):
         assert validate_name("a.b") == "a.b"
 
+    def test_case_folding(self):
+        assert validate_name("FooBar") == "foobar"
+
     def test_topic_lowercase_ok(self):
-        # only the literal `TOPIC` is reserved, case-sensitive
-        assert validate_name("topic") == "topic"
+        # `topic` (any case) is reserved — folded to `topic` which equals the
+        # reserved basename lowercase, so this now raises.
+        with pytest.raises(InvalidNameError):
+            validate_name("topic")
 
 
 class TestValidateNameReject:
@@ -87,6 +104,12 @@ class TestValidateNameReject:
     def test_topic(self):
         with pytest.raises(InvalidNameError):
             validate_name("TOPIC")
+
+    def test_topic_mixed_case_reserved(self):
+        # any case variant of `topic` is reserved
+        for variant in ("Topic", "tOpIc", "TOPIC", "topic"):
+            with pytest.raises(InvalidNameError):
+                validate_name(variant)
 
     def test_slash(self):
         with pytest.raises(InvalidNameError):

@@ -18,6 +18,7 @@ def _setup(root: Path) -> None:
     store.topic_create(root, "topic1", "topic desc")
     store.postit_create(root, "alpha", "topic-scope\nfoo line\n", dir="topic1")
     store.postit_create(root, "TOPIC-like", "not allowed\n", dir=".")  # name only
+    # Note: `TOPIC-like` is folded to `topic-like` on disk (case-insensitive).
 
 
 def test_body_match_returns_full_line(root: Path):
@@ -79,7 +80,7 @@ def test_case_sensitive_with_negative_inline(root: Path):
 def test_limit_caps(root: Path):
     _setup(root)
     all_hits = search(root, ".*", scope="name")  # every postit's name matches
-    assert len(all_hits) == 4  # alpha, beta, topic1/alpha, TOPIC-like
+    assert len(all_hits) == 4  # alpha, beta, topic1/alpha, topic-like
     cap = search(root, ".*", scope="name", limit=2)
     assert len(cap) == 2
 
@@ -129,8 +130,8 @@ def test_recent_top_by_mtime(root: Path):
     p_alpha = root / "alpha.md"
     p_beta = root / "beta.md"
     p_talpha = root / "topic1" / "alpha.md"
-    p_topic = root / "TOPIC-like.md"
-    # alpha (oldest), topic1/alpha (mid), beta (newest), TOPIC-like (newest-1)
+    p_topic = root / "topic-like.md"
+    # alpha (oldest), topic1/alpha (mid), beta (newest), topic-like (newest-1)
     os.utime(p_alpha, (base - 1000, base - 1000))
     os.utime(p_talpha, (base - 100, base - 100))
     os.utime(p_topic, (base - 10, base - 10))
@@ -138,7 +139,7 @@ def test_recent_top_by_mtime(root: Path):
     out = recent(root, limit=10)
     paths = [r.path for r in out]
     assert paths[0] == "beta"
-    assert paths[1] == "TOPIC-like"
+    assert paths[1] == "topic-like"
     assert paths[2] == "topic1/alpha"
     assert paths[3] == "alpha"
 
@@ -160,7 +161,7 @@ def test_recent_default_at_root_returns_all(root: Path):
     out = recent(root)
     names = {r.path for r in out}
     # Default limit=10; we have 4 postits
-    assert names == {"alpha", "beta", "topic1/alpha", "TOPIC-like"}
+    assert names == {"alpha", "beta", "topic1/alpha", "topic-like"}
 
 
 def test_recent_limit_caps(root: Path):
@@ -174,9 +175,40 @@ def test_recent_tiebreaker_path(root: Path):
     t = 1234567890
     os.utime(root / "alpha.md", (t, t))
     os.utime(root / "beta.md", (t, t))
-    os.utime(root / "TOPIC-like.md", (t, t))
+    os.utime(root / "topic-like.md", (t, t))
     os.utime(root / "topic1" / "alpha.md", (t, t))
     out = recent(root, limit=10)
     paths = [r.path for r in out]
     # Tiebreaker = path byte-order ascending
     assert paths == sorted(paths)
+
+
+def test_mixed_case_suffix_on_disk_is_foreign(root: Path):
+    # A hand-created file with a mixed-case `.MD` suffix on disk is treated as
+    # foreign and never matched (we only ever write lowercase `.md`).
+    (root / "Foreign.MD").write_text("should-not-match foo\n")
+    hits = search(root, "foo")
+    assert all(h.path != "Foreign" for h in hits)
+    assert all(h.path.lower() != "foreign" for h in hits)
+
+
+def test_topic_md_mixed_case_on_disk_is_foreign(root: Path):
+    # A hand-created `Topic.md` (lowercased basename equals `topic.md` ⇒ reserved)
+    # is also skipped — it is neither a postit nor searchable.
+    (root / "Topic.md").write_text("should-not-match foo\n")
+    hits = search(root, "foo")
+    assert all(h.name.lower() != "topic" for h in hits)
+
+
+def test_case_insensitive_path_in_search(root: Path):
+    # Even if a note is somehow created with a mixed-case name on disk,
+    # search/postit ops are case-insensitive; but our store always writes
+    # lowercase, so the canonical fixture uses lowercase dir.
+    store.topic_create(root, "MyTopic", "desc with foo")
+    store.postit_create(root, "MyNote", "body line foo\n", dir="mytopic")
+    hits = search(root, "foo")
+    assert any(h.path == "mytopic/mynote" for h in hits)
+    # name does not contain 'foo' — only the body matches
+    h = next(h for h in hits if h.path == "mytopic/mynote")
+    assert h.name_match is False
+    assert any("foo" in bm.line.lower() for bm in h.body_matches)

@@ -29,8 +29,9 @@ directory you own. There is no network surface.
 ## Concepts
 
 - **Notes** are `.md` files. The filename (without `.md`) **is** the note's
-  name, kept verbatim — no slugification. The body is whatever Markdown
-  the agent writes.
+  name — no slugification, but **all names are case-folded to lowercase** on
+  the way in (see [Case folding](#note-name-and-path-case-folding)). The body
+  is whatever Markdown the agent writes.
 - **Topics** are directories that group related notes. Each topic dir
   contains a `TOPIC.md` file describing what the topic is about. Topics
   are created explicitly (see `topic.create`); they are never auto-created
@@ -41,7 +42,8 @@ directory you own. There is no network surface.
 - Topics may nest (a topic inside a topic); each nested level gets its own
   `TOPIC.md` via its own `topic.create`.
 - `TOPIC` is a reserved note name: you cannot create a note called
-  `TOPIC.md` directly in any directory.
+  `TOPIC.md` directly in any directory. The reserved-name check is
+  case-insensitive, so `Topic`, `topic`, and `TOPIC` are all rejected.
 - `TOPIC.md` files are never searched or listed as postits — they only
   appear through `topic.read` / `topic.write`.
 
@@ -110,7 +112,8 @@ no integer IDs. `dir` defaults to the root.
 - Renames `<name>.md` to `<new_name>.md` within the same directory.
 - Refuses if `new_name == name` → `no_op`, or if `<new_name>.md` already
   exists → `already_exists`. Same-directory only; cross-dir move is out
-  of scope. `new_name` runs through note-name validation.
+  of scope. `new_name` runs through note-name validation (and is
+  lowercased), so `OldName` → `NEWNAME` resolves to `oldname` → `newname`.
 
 `postit.delete`
 
@@ -203,9 +206,48 @@ no integer IDs. `dir` defaults to the root.
 
 - Reject if it contains `/`, a NUL byte, or a newline.
 - Reject if it begins with `.` (dotfile confusion).
-- Reject if it equals `TOPIC` (reserved).
+- Reject if it equals `TOPIC` (reserved — case-insensitive: `TOPIC`, `Topic`,
+  `topic` are all rejected because the name is lowercased before the check).
 - Reject if empty.
-- Otherwise the name is used verbatim with `.md` appended.
+- Otherwise the name is **lowercased**, used with `.md` appended. The note's
+  on-disk filename is always lowercase.
+
+### Note-name and path case folding
+
+All `dir` and `name` arguments are **case-folded to lowercase** on the way
+in. This applies to every operation — create, read, update, rename, delete,
+`ls`, `search`, and `recent`. Two consequences worth knowing:
+
+- **Names you pass are not preserved on disk.** A note created with the name
+  `Recall` lands on disk as `recall.md`. Creating `Foo` and then trying to
+  create `foo` is an `already_exists` error: after folding they are the same
+  name. Reading, listing, searching, and deleting accept any case and all
+  resolve to the same note.
+- **Reserved-name matching is case-insensitive.** The reserved basename is
+  `TOPIC` (i.e. on-disk `topic.md`); any case variant the caller passes is
+  rejected.
+
+Topic dirs work the same way: `topic.create` and every other verb fold the
+`dir` argument's components to lowercase. Creating the topic `MyTopic` lands
+on disk as `mytopic/`.
+
+#### Foreign files on disk
+
+The server only ever writes lowercase `.md` filenames and lowercase topic
+dir names. If you hand-place a file on disk that does not match the expected
+shape, the rule is:
+
+- A file whose **suffix is not exactly lowercase `.md`** (e.g. `Foo.MD`,
+  `Foo.Md`) is **foreign**: it is never listed by `postit.ls`, never
+  searched by `postit.search`, never returned by `postit.recent`. It is
+  invisible to the agent.
+- A file whose suffix **is** lowercase `.md` but whose lowercased basename
+  equals `topic` (e.g. a stray `Topic.md` you dropped in by hand) is treated
+  as the topic marker for that directory and is likewise never surfaced as
+  a postit.
+
+So a hand-created `Foo.MD` coexisting with a server-created `foo.md` is
+fine — only `foo.md` is visible, and `Foo.MD` is silently ignored.
 
 ### Encoding and size
 
@@ -275,10 +317,131 @@ is also installed by `uv sync`; `uv run agent-postit` works identically to
 
 ### Connect an MCP client
 
-_point your MCP client at the running process' stdio_. The exact config
-depends on the client; the recommended invocation is the `python -m
-agent_postit` form, with a `--root` (or `POSTIT_ROOT`) so the notes land
-somewhere predictable.
+Point your MCP client at the running process' stdio. The exact config
+depends on the client; for **Zed** see the next subsection. Other clients
+(Claude Desktop, custom harnesses) follow the same pattern: spawn
+`python -m agent_postit` as a child process and speak JSON-RPC over its
+stdin/stdout.
+
+#### Configure in Zed
+
+Zed reads MCP server config from its settings file (open with
+`zed: open settings file`, or edit from **Settings → AI → MCP Servers**).
+Local stdio servers live under `context_servers` with a `command`, `args`,
+and optional `env`. No shell expansion is performed inside `command` /
+`args` — use absolute paths and literal strings.
+
+**Option A — `uv` (recommended).** Faster cold-start, no per-session
+container, logs straight to a shell if you run the same command manually.
+Assumes the repo is checked out at `/home/leviticus/random/remember-me`:
+
+```jsonc
+{
+  "context_servers": {
+    "agent-postit": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "/home/leviticus/random/remember-me",
+        "python",
+        "-m",
+        "agent_postit",
+        "--root",
+        "/home/leviticus/.agent-postit"
+      ],
+      "env": {}
+    }
+  }
+}
+```
+
+**Option B — container.** Same protocol, podman drives the image built
+above. Notes land in the host directory you bind-mount at `/data`.
+
+```jsonc
+{
+  "context_servers": {
+    "agent-postit": {
+      "command": "podman",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-v",
+        "/home/leviticus/.agent-postit:/data:Z",
+        "agent-postit:dev"
+      ],
+      "env": {}
+    }
+  }
+}
+```
+
+Drop `:Z` on non-SELinux hosts and substitute `docker` for `podman` if
+that's your runtime. Don't add `--tty` / `-t` — it breaks line buffering
+for stdio protocols.
+
+**Verify the server is live.** In Zed open **Settings → AI → MCP
+Servers** and watch the indicator dot next to `agent-postit`. Green with
+the tooltip "Server is active" means the handshake succeeded and the
+13 tools have been registered. Red indicates an error; hover for details
+(typically an absolute-path typo or a missing `--root`).
+
+The tools surface to the agent as `mcp:agent-postit:<tool>`, e.g.
+`mcp:agent-postit:postit.recent` at session start.
+
+#### Tool permissions (Zed)
+
+By default Zed prompts before every tool call. For dogfooding it's sane
+to auto-allow the no-side-effect reads, keep creates/writes on `confirm`
+so you can sanity-check what's about to land, and always prompt for
+delete (no trash bin, no undo in v1).
+
+Per-tool entries use the `mcp:<server>:<tool>` key and override the
+global `agent.tool_permissions.default`. Anything not listed inherits
+that default.
+
+```jsonc
+{
+  "agent": {
+    "tool_permissions": {
+      "default": "confirm",
+      "tools": {
+        // Read-only: no state change → auto-allow.
+        "mcp:agent-postit:topic.read":          { "default": "allow" },
+        "mcp:agent-postit:postit.read":         { "default": "allow" },
+        "mcp:agent-postit:postit.read_section": { "default": "allow" },
+        "mcp:agent-postit:postit.read_lines":   { "default": "allow" },
+        "mcp:agent-postit:postit.ls":           { "default": "allow" },
+        "mcp:agent-postit:postit.search":       { "default": "allow" },
+        "mcp:agent-postit:postit.recent":       { "default": "allow" },
+
+        // Create / modify: confirm so you see what's being written.
+        // (Left at the global default; flip individual ones to "allow"
+        // once you trust them, e.g. postit.create after a few sessions.)
+        "mcp:agent-postit:topic.create":        { "default": "confirm" },
+        "mcp:agent-postit:topic.write":         { "default": "confirm" },
+        "mcp:agent-postit:postit.create":       { "default": "confirm" },
+        "mcp:agent-postit:postit.update_body":  { "default": "confirm" },
+        "mcp:agent-postit:postit.rename":       { "default": "confirm" },
+
+        // Delete: irreversible, no trash, no v1 undo → keep on confirm.
+        "mcp:agent-postit:postit.delete":        { "default": "confirm" }
+      }
+    }
+  }
+}
+```
+
+Suggested progression: start with the block above as-is. After a session
+or two `postit.create` and `postit.update_body` get noisy — flip those
+two to `allow` and leave `delete` permanently on `confirm`. The cost of
+an errant append is an `update_body` overwrite; the cost of an errant
+delete is gone forever.
+
+For full reference see the [Zed MCP guide](https://zed.dev/docs/ai/mcp)
+and the [tool permissions doc](https://zed.dev/docs/agent/tool-permissions).
 
 ### Run as a container (podman or docker)
 
@@ -295,7 +458,6 @@ podman build -t agent-postit:dev .
 # or, equivalently:
 podman build -f Containerfile -t agent-postit:dev .
 
-```sh
 # docker works the same:
 docker build -t agent-postit:dev .
 ```
@@ -307,7 +469,6 @@ podman run -i --rm \
   -v ~/.agent-postit:/data:Z \
   agent-postit:dev
 
-```sh
 # docker works the same:
 docker run -i --rm \
   -v ~/.agent-postit:/data \
@@ -329,24 +490,6 @@ Notes on the container:
   `mcp` dependency tree).
 - No `HEALTHCHECK` is defined: a stdio server has no network surface to
   probe.
-
----
-
-## Caveats
-
-- **Single-process assumed.** No file locking. Multi-process use (e.g.
-  two containers writing the same bind-mounted root) is out of scope for
-  v1 and may corrupt concurrent writes.
-- **`update_body` append is read-modify-write.** A crash mid-append can
-  lose the appended content; the existing body is safe because the write
-  is atomic. Acceptable for v1.
-- **Case-sensitive filesystem assumed.** Linux is fine. macOS hosts with
-  podman may have a case-insensitive host filesystem, in which case
-  `Foo.md` and `foo.md` collide. No case normalization is applied.
-- **`mtime` ordering can be skewed** by external tools (rsync, tar, `cp
-  -p` quirks). `recent` orders by mtime descending with `path` ascending
-  as a stable tiebreaker; this is deterministic but not adjusted if an
-  external tool rewrites mtimes.
 
 ---
 

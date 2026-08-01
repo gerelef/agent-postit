@@ -179,17 +179,54 @@ def _parent_dir(dir: str) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def _atomic_write_text(path: Path, data: str) -> None:
-    """Write `data` (UTF-8, no BOM) atomically to `path`.
+def _fsync_fd(fd: int) -> None:
+    """Best-effort `fsync` on an open fd. Silently ignore unsupported FS."""
+    try:
+        os.fsync(fd)
+    except OSError:
+        # EINVAL / ENOTSUP / EBADF on weird filesystems (tmpfs, network
+        # mounts, /dev/null, etc.). Durability is a best-effort property
+        # here; the rename remains atomic regardless.
+        pass
 
-    Uses a tmp file in the *same directory* + `os.replace` to keep the
-    rename atomic at FS level. Tmp is cleaned on failure.
+
+def _fsync_dir(path: Path) -> None:
+    """Best-effort fsync of the directory holding `path`'s dir entry.
+
+    Required to durably commit a rename / unlink on POSIX: the file's data
+    may be flushed by fsync on the file fd, but the directory entry update
+    is only committed by fsync on the parent dir fd.
+    """
+    try:
+        dir_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError:
+        return
+    try:
+        _fsync_fd(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def _atomic_write_text(path: Path, data: str) -> None:
+    """Write `data` (UTF-8, no BOM) atomically and durably to `path`.
+
+    Sequence: write tmp → fsync tmp → `os.replace` → fsync parent dir.
+    This is the canonical POSIX crash-safe write:
+      - the rename is atomic at FS level so readers always see either
+        the old or the new file, never a half-written body;
+      - fsync of the tmp fd persists the bytes before the rename;
+      - fsync of the parent dir persists the directory entry update so
+        the rename survives power loss immediately after this call.
+    On any exception the tmp file is unlinked (best-effort) and re-raised.
     """
     tmp = path.with_name("." + path.name + ".agentpostit.tmp")
     try:
         with open(tmp, "w", encoding="utf-8", newline="") as f:
             f.write(data)
+            f.flush()
+            _fsync_fd(f.fileno())
         os.replace(tmp, path)
+        _fsync_dir(path)
     except BaseException:
         try:
             os.unlink(tmp)
@@ -470,10 +507,18 @@ def postit_read_lines(
 
 
 def _is_postit_filename(entry_name: str) -> bool:
-    """True iff `entry_name` is a `.md` file basename that is NOT `TOPIC.md`."""
+    """True iff `entry_name` is a lowercase `.md` file that is NOT a topic marker.
+
+    Rule (case-insensitive on the *topic* aspect only):
+    - The `.md` suffix match is **case-sensitive**: we only ever write
+      lowercase `.md`, so a hand-created `Foo.MD` / `Foo.Md` on disk is
+      treated as foreign and skipped (matches the foreign-file spec).
+    - The `TOPIC.md` skip is **case-insensitive**: a stray `Topic.md` /
+      `topic.md` is still the reserved marker, not a postit.
+    """
     if not entry_name.endswith(NOTE_SUFFIX):
         return False
-    if entry_name == TOPIC_FILENAME:
+    if entry_name.lower() == TOPIC_FILENAME.lower():
         return False
     return True
 

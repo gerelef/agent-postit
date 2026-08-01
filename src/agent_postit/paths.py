@@ -59,10 +59,11 @@ def normalize_dir(dir: str) -> str:
     - Reject any component equal to `..` (escape attempt).
     - Reject empty intermediate components (e.g. `"a//b"` — collapsed silently
       would hide intent; reject to surface caller bugs).
+    - **All components are lowercased on the way through.** Names on disk are
+      always lowercase; callers may pass any case and it will be folded.
 
     The returned value is a POSIX relative path (or `""` for root), with no
-    leading or trailing slash. Components are kept verbatim — case is not
-    normalized (Linux case-sensitive assumed).
+    leading or trailing slash, fully lowercased.
     """
     if dir is None:
         # Defensive: treat None as root. (Tool layer should never pass None
@@ -110,7 +111,7 @@ def normalize_dir(dir: str) -> str:
             # did not already reject via the whole-string check above; kept
             # for defence in depth.
             raise InvalidPathError("dir component contains NUL byte")
-        components.append(part)
+        components.append(part.lower())
 
     if not components:
         return ROOT
@@ -128,14 +129,16 @@ def dir_components(dir: str) -> list[str]:
 
 
 def validate_name(name: str) -> str:
-    """Validate a note name. Returns the name verbatim (no slugification).
+    """Validate a note name. Returns the name **lowercased** (no slugification).
 
     Rejects:
     - empty / not-a-str
     - contains `/`, `\\0`, newline (`\\n` or `\\r\\n`)
     - begins with `.` (dotfile confusion)
-    - equals reserved `TOPIC` (case-sensitive — `TOPIC.md` is the topic
-      marker file; `topic` lower-case is a legitimate note name)
+    - equals reserved `topic` (any case — `TOPIC.md` is the topic marker
+      file; `topic`, `Topic`, `TOPIC` are all rejected because the input is
+      lowercased before the reserved check, and the on-disk filename is
+      case-folded too)
 
     Caller is responsible for appending `.md`.
     """
@@ -143,17 +146,18 @@ def validate_name(name: str) -> str:
         raise InvalidNameError("name must be a string")
     if name == "":
         raise InvalidNameError("name is empty")
-    if name == TOPIC_BASENAME:
+    folded = name.lower()
+    if folded == TOPIC_BASENAME.lower():
         raise ReservedNameError("name is reserved (TOPIC.md marker)")
-    if name.startswith("."):
+    if folded.startswith("."):
         raise InvalidNameError("name begins with '.' (dotfile confusion)")
-    if "/" in name:
+    if "/" in folded:
         raise InvalidNameError("name contains '/'")
-    if "\0" in name:
+    if "\0" in folded:
         raise InvalidNameError("name contains NUL byte")
-    if "\n" in name or "\r" in name:
+    if "\n" in folded or "\r" in folded:
         raise InvalidNameError("name contains a newline")
-    return name
+    return folded
 
 
 def note_filename(name: str) -> str:
