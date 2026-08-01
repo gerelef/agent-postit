@@ -28,7 +28,7 @@ behind it on loopback.
 You need Python 3.12+ and [`uv`](https://github.com/astral-sh/uv).
 
 ```sh
-git clone <this repo> && cd agent-postit
+git clone https://github.com/gerelef/agent-postit.git && cd agent-postit
 uv sync                       # install deps (incl. dev) into ./.venv
 uv run python -m agent_postit # serves MCP at http://127.0.0.1:8000/mcp
 ```
@@ -46,17 +46,6 @@ uv run python -m agent_postit --root ./my-notes --port 8011
 # or
 POSTIT_ROOT=/var/lib/agent-postit POSTIT_PORT=8011 uv run python -m agent_postit
 ```
-
-Env precedence (highest first): `--root` > `POSTIT_ROOT` > `~/.agent-postit`.
-Same shape for transport / host / port: `--transport` > `POSTIT_TRANSPORT`
-> `http`; `--host` > `POSTIT_HOST` > `127.0.0.1`; `--port` > `POSTIT_PORT`
-> `8000`. `POSTIT_LOG` (default `-`/stderr) has no CLI flag — see
-`uv run python -m agent_postit --help` for the full surface.
-
-A second instance trying to bind the same loopback port exits cleanly
-with a "agent-postit already running on ..." message — the binary does a
-preflight TCP connect check before uvicorn starts, so there is no
-`EADDRINUSE` traceback and no need for a lock file.
 
 ### Container (podman or docker)
 
@@ -92,25 +81,6 @@ The `127.0.0.1:` prefix on the publish flag is the loopback guarantee —
 do not drop it unless you intend to expose the port to other hosts
 (and have a reverse proxy with auth in front).
 
-Container notes:
-
-- The image bakes `POSTIT_HOST=0.0.0.0` so podman's published-port proxy
-  can reach the listener inside the container netns. Host exposure is
-  governed by the `-p 127.0.0.1:8000:8000` publish flag on the `run`
-  command — two distinct layers, do not conflate them.
-- There is no `USER` clause in the Dockerfile. Under **rootless podman**
-  the in-container uid 0 maps to the invoking user's host uid, so
-  bind-mounted `~/.agent-postit` is readable and writable as your files
-  with no `chown` or `--userns` ceremony. Under **system podman / docker**
-  (where container root is real root), pass `--user $(id -u):$(id -g)`
-  so files land as your uid.
-- Final image size is ~160 MB (`python:3.12-slim-bookworm` base plus the
-  `mcp` dependency tree).
-- `HEALTHCHECK` runs every 30 s against `http://127.0.0.1:8000/healthz`
-  (probed _inside_ the container netns, where the server is reachable on
-  loopback) using `urllib` from the base image. If you change the listen
-  port, override `POSTIT_PORT` and the `EXPOSE`/`-p` mapping together.
-
 ### Under `systemd --user` (rootless quadlet)
 
 A reference rootless quadlet is shipped at
@@ -120,20 +90,16 @@ Quadlet (podman 4.4+) is podman's native systemd integration: drop a
 and the podman generator emits a regular `agent-postit.service` from it
 on boot — no hand-written `podman run` line in the unit.
 
-Edit the `Image=` line in the quadlet to point at your built tag (e.g.
-`agent-postit:latest`), install it, and start:
+Build the `agent-postit:latest` image, install the quadlet file, and start:
 
 ```sh
 mkdir -p ~/.config/containers/systemd
 cp contrib/agent-postit.container ~/.config/containers/systemd/
 systemctl --user daemon-reload
 systemctl --user enable --now agent-postit.service
-journalctl --user -u agent-postit.service -f   # follows stdout/uvicorn
+journalctl --user -u agent-postit.service -f  # follows stdout/uvicorn
+systemctl --user status agent-postit.service  # verify everything works
 ```
-
-A `--user` service is killed when your login session ends unless you run
-`loginctl enable-linger $USER` once. Standard systemd caveat, not
-agent-postit-specific.
 
 ---
 
@@ -201,18 +167,18 @@ reading/listing/deleting it accepts any case. `TOPIC` is a reserved name
 
 - **`postit.ls`** — `dir?` (defaults to root), `name?`, `recursive?`
   (default `false`, dir mode only).
-  - **Dir mode** (`name` absent): a flat `ls -la`-style list of items in
-    `dir`, dirs and postits interleaved alphabetically. Each dir item
-    reports whether it has a `TOPIC.md` and a short preview of its
-    description; each postit item reports `mtime` and `size`. With
-    `recursive=true`, the whole subtree is walked into one flat list
-    with full relative paths as the `name`, sort key = full relative
-    path.
-  - **Note mode** (`name` set): `{name, dir, total_lines, headings}` —
-    the Markdown headings in that file (level, text, 1-based line
-    number), document order, **no body content**. Useful as a table of
-    contents before `read_section` / `read_lines`. `recursive` ignored.
-  - `TOPIC.md` is never listed. Foreign files (non-`.md`) are ignored.
+    - **Dir mode** (`name` absent): a flat `ls -la`-style list of items in
+      `dir`, dirs and postits interleaved alphabetically. Each dir item
+      reports whether it has a `TOPIC.md` and a short preview of its
+      description; each postit item reports `mtime` and `size`. With
+      `recursive=true`, the whole subtree is walked into one flat list
+      with full relative paths as the `name`, sort key = full relative
+      path.
+    - **Note mode** (`name` set): `{name, dir, total_lines, headings}` —
+      the Markdown headings in that file (level, text, 1-based line
+      number), document order, **no body content**. Useful as a table of
+      contents before `read_section` / `read_lines`. `recursive` ignored.
+    - `TOPIC.md` is never listed. Foreign files (non-`.md`) are ignored.
 - **`postit.search`** — `pattern` (Python `re` regex), `scope`
   (`"name" | "body" | "both"`, default `"both"`), `dir?` (defaults to
   root), `recursive?` (default `true`), `limit?` (default 50). Walks
@@ -227,13 +193,11 @@ reading/listing/deleting it accepts any case. `TOPIC` is a reserved name
   Default `dir=root` returns every postit across the whole tree. Use at
   session start to reload context — body is deliberately not included.
 
-### Notes for an agent that doesn't know where to start
+### 'Hello World' notes for an agent that doesn't know where to start
 
 - At session start: call **`postit.recent`** with no args to see what
   you noted last. Optional: `postit.ls` the root or a project topic to
   see what topics exist.
-- Before you write `Recall.md` "by hand" — don't. Use `postit.create`
-  so the name is validated and lowercased consistently.
 - Want to peek at a note without pulling the whole body? `postit.ls`
   with `name` set gives you the table of contents; then `read_section`
   for the part you care about, or `read_lines` for an exact range.
@@ -252,6 +216,41 @@ Errors are returned, not raised, as `{code, message}` objects. Codes:
 
 ---
 
+## Extras
+
+### Container Notes
+
+- The image bakes `POSTIT_HOST=0.0.0.0` so podman's published-port proxy
+  can reach the listener inside the container netns. Host exposure is
+  governed by the `-p 127.0.0.1:8000:8000` publish flag on the `run`
+  command — two distinct layers, do not conflate them.
+- There is no `USER` clause in the Dockerfile. Under **rootless podman**
+  the in-container uid 0 maps to the invoking user's host uid, so
+  bind-mounted `~/.agent-postit` is readable and writable as your files
+  with no `chown` or `--userns` ceremony. Under **system podman / docker**
+  (where container root is real root), pass `--user $(id -u):$(id -g)`
+  so files land as your uid.
+- Final image size is ~160 MB (`python:3.12-slim-bookworm` base plus the
+  `mcp` dependency tree).
+- `HEALTHCHECK` runs every 30 s against `http://127.0.0.1:8000/healthz`
+  (probed _inside_ the container netns, where the server is reachable on
+  loopback) using `urllib` from the base image. If you change the listen
+  port, override `POSTIT_PORT` and the `EXPOSE`/`-p` mapping together.
+
+### Environment Variables
+
+Env precedence (highest first): `--root` > `POSTIT_ROOT` > `~/.agent-postit`.
+Same shape for transport / host / port: `--transport` > `POSTIT_TRANSPORT`
+
+> `http`; `--host` > `POSTIT_HOST` > `127.0.0.1`; `--port` > `POSTIT_PORT`
+> `8000`. `POSTIT_LOG` (default `-`/stderr) has no CLI flag — see
+> `uv run python -m agent_postit --help` for the full surface.
+
+A second instance trying to bind the same loopback port exits cleanly
+with a "agent-postit already running on ..." message — the binary does a
+preflight TCP connect check before uvicorn starts, so there is no
+`EADDRINUSE` traceback and no need for a lock file.
+
 ## Editor integration
 
 ### Zed
@@ -263,11 +262,11 @@ already be running — Zed does not spawn it.
 
 ```jsonc
 {
-  "context_servers": {
-    "agent-postit": {
-      "url": "http://127.0.0.1:8000/mcp"
-    }
-  }
+    "context_servers": {
+        "agent-postit": {
+            "url": "http://127.0.0.1:8000/mcp",
+        },
+    },
 }
 ```
 
@@ -288,53 +287,40 @@ ignored — it is cosmetic, not enforced.
 
 #### Tool permissions (Zed)
 
-By default Zed prompts before every tool call. For dogfooding it's sane
-to auto-allow the no-side-effect reads, keep creates/writes on
-`confirm` so you can sanity-check what's about to land, and keep delete
-on `confirm` (no trash bin, no undo in v1).
-
+By default Zed prompts before every tool call.
 Per-tool entries use the `mcp:<server>:<tool>` key and override the
 global `agent.tool_permissions.default`. Anything not listed inherits
 that default.
 
-```jsonc
-{
-  "agent": {
-    "tool_permissions": {
-      "default": "confirm",
-      "tools": {
-        // Read-only: no state change → auto-allow.
-        "mcp:agent-postit:topic.read":          { "default": "allow" },
-        "mcp:agent-postit:postit.read":         { "default": "allow" },
-        "mcp:agent-postit:postit.read_section": { "default": "allow" },
-        "mcp:agent-postit:postit.read_lines":   { "default": "allow" },
-        "mcp:agent-postit:postit.ls":           { "default": "allow" },
-        "mcp:agent-postit:postit.search":       { "default": "allow" },
-        "mcp:agent-postit:postit.recent":       { "default": "allow" },
-
-        // Create / modify: confirm so you see what's being written.
-        "mcp:agent-postit:topic.create":        { "default": "confirm" },
-        "mcp:agent-postit:topic.write":         { "default": "confirm" },
-        "mcp:agent-postit:postit.create":       { "default": "confirm" },
-        "mcp:agent-postit:postit.update_body":  { "default": "confirm" },
-        "mcp:agent-postit:postit.rename":       { "default": "confirm" },
-
-        // Delete: irreversible → always confirm.
-        "mcp:agent-postit:postit.delete":       { "default": "confirm" }
-      }
-    }
-  }
-}
-```
-
-Suggested progression: start with the block above as-is. After a
-session or two `postit.create` and `postit.update_body` get noisy — flip
-those two to `allow` and leave `delete` permanently on `confirm`. The
-cost of an errant append is one `update_body` overwrite; the cost of an
-errant delete is gone forever.
-
 For the full reference see the [Zed MCP guide](https://zed.dev/docs/ai/mcp)
 and the [tool permissions doc](https://zed.dev/docs/agent/tool-permissions).
+
+```jsonc
+{
+    "agent": {
+        "tool_permissions": {
+            "tools": {
+                // agent-postit: auto-allow
+                "mcp:agent-postit:topic.read": { "default": "allow" },
+                "mcp:agent-postit:postit.read": { "default": "allow" },
+                "mcp:agent-postit:postit.read_section": { "default": "allow" },
+                "mcp:agent-postit:postit.read_lines": { "default": "allow" },
+                "mcp:agent-postit:postit.ls": { "default": "allow" },
+                "mcp:agent-postit:postit.search": { "default": "allow" },
+                "mcp:agent-postit:postit.recent": { "default": "allow" },
+                "mcp:agent-postit:topic.create": { "default": "allow" },
+                "mcp:agent-postit:topic.write": { "default": "allow" },
+                "mcp:agent-postit:postit.create": { "default": "allow" },
+
+                // agent-postit: confirm first
+                "mcp:agent-postit:postit.update_body": { "default": "confirm" },
+                "mcp:agent-postit:postit.rename": { "default": "confirm" },
+                "mcp:agent-postit:postit.delete": { "default": "confirm" },
+            },
+        },
+    },
+}
+```
 
 ---
 
