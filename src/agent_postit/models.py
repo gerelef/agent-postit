@@ -8,10 +8,9 @@ dataclasses; `server.py` is responsible for the store->model conversion.
 
 from __future__ import annotations
 
-from typing import Literal, Union
+from typing import Literal
 
 from pydantic import BaseModel
-
 
 # --------------------------------------------------------------------------- #
 # Topic verbs                                                                  #
@@ -177,7 +176,7 @@ class LsOut(BaseModel):
     heterogeneous list into `structured_content` rather than falling back to
     multi-text content blobs."""
 
-    items: list[Union[LsDirItem, LsPostitItem]] | None = None
+    items: list[LsDirItem | LsPostitItem] | None = None
     note_mode: LsNoteModeOut | None = None
 
 
@@ -261,4 +260,4 @@ class ToolError(BaseModel):
 # Convenience: a tool result is either the success payload or a ToolError. We
 # do not encode the union at the type layer (FastMCP serializes whatever we
 # return); this alias is for readability inside `server.py`.
-ToolResult = Union[BaseModel, ToolError]
+ToolResult = BaseModel | ToolError

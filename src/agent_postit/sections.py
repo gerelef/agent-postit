@@ -103,11 +103,9 @@ def _parse_clean(body: str) -> list[Heading]:
     while idx <= n:
         nl = body.find("\n", idx)
         if nl == -1:
-            line_end = n
             line = body[idx:n]
             advance = False  # last iteration
         else:
-            line_end = nl
             line = body[idx:nl]
             advance = True
         offset = idx

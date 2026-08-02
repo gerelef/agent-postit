@@ -17,12 +17,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .paths import (
-    InvalidNameError,
-    InvalidPathError,
+    NOTE_SUFFIX,
     ROOT,
     TOPIC_BASENAME,
     TOPIC_FILENAME,
-    NOTE_SUFFIX,
+    InvalidNameError,
+    InvalidPathError,
     normalize_dir,
     validate_name,
 )
@@ -650,9 +650,7 @@ def _is_postit_filename(entry_name: str) -> bool:
     """
     if not entry_name.endswith(NOTE_SUFFIX):
         return False
-    if entry_name.lower() == TOPIC_FILENAME.lower():
-        return False
-    return True
+    return entry_name.lower() != TOPIC_FILENAME.lower()
 
 
 def _topic_preview_of(topic_path: Path) -> str | None:
@@ -740,7 +738,6 @@ def postit_ls(
                 if not _is_postit_filename(fn):
                     continue
                 full = base / fn
-                rel_name_root = full.stem  # filename minus .md
                 rel = _rel_to_start(start_dir, full)
                 st = full.stat()
                 items.append(

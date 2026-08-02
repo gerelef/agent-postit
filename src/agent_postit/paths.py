@@ -87,8 +87,7 @@ def normalize_dir(dir: str) -> str:
     # "foo" (per spec test `normalize("/foo") -> "foo"`). We do not reject
     # leading-slash inputs; the reject-absolute rule is moot on POSIX once
     # we've already escaped `..`.
-    if s.startswith("/"):
-        s = s[1:]
+    s = s.removeprefix("/")
     # Strip trailing slashes until none remain.
     while s.endswith("/"):
         s = s[:-1]

@@ -15,7 +15,6 @@ import asyncio
 import functools
 import time
 from pathlib import Path
-from typing import Union
 
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
@@ -23,21 +22,17 @@ from mcp.types import ToolAnnotations
 from . import models as M
 from .log import ToolLogger
 from .paths import PathError
+from .search import recent as recent_impl
+from .search import search as search_impl
+from .sections import Heading as SectionHeading
 from .store import (
-    StoreError,
-    NoteInfo,
-    SectionResult,
-    LinesResult,
     LsDirItem,
     LsNoteModeResult,
     LsPostitItem,
-    StoreError as _StoreError,
+    NoteInfo,
+    StoreError,
     TopicInfo,
 )
-from .sections import Heading as SectionHeading
-from .search import search as search_impl, recent as recent_impl
-from .search import RecentItem, SearchHit
-
 
 # --------------------------------------------------------------------------- #
 # Helpers: store dataclass -> pydantic model                                  #
@@ -200,7 +195,7 @@ def build_server(root: Path, *, logger: ToolLogger | None = None) -> MCPServer:
               title="Topic: Create",
               description="Create a new topic directory with a short description. Use when starting a new concern, so later notes have a place to go.",
               annotations=_ann(idempotent=True))
-    async def topic_create(arg: M.TopicCreateIn) -> Union[M.TopicOut, M.ToolError]:
+    async def topic_create(arg: M.TopicCreateIn) -> M.TopicOut | M.ToolError:
         try:
             from . import store as _store
             return _topic(await _t(_store.topic_create, root, arg.dir, arg.description))
@@ -211,7 +206,7 @@ def build_server(root: Path, *, logger: ToolLogger | None = None) -> MCPServer:
               title="Topic: Read",
               description="Read a topic's description.",
               annotations=_ann(read_only=True, idempotent=True))
-    async def topic_read(arg: M.TopicReadIn) -> Union[M.TopicReadOut, M.ToolError]:
+    async def topic_read(arg: M.TopicReadIn) -> M.TopicReadOut | M.ToolError:
         try:
             from . import store as _store
             info = await _t(_store.topic_read, root, arg.dir)
@@ -226,7 +221,7 @@ def build_server(root: Path, *, logger: ToolLogger | None = None) -> MCPServer:
               title="Topic: Write",
               description="Overwrite a topic's description.",
               annotations=_ann(destructive=True, idempotent=True))
-    async def topic_write(arg: M.TopicWriteIn) -> Union[M.TopicOut, M.ToolError]:
+    async def topic_write(arg: M.TopicWriteIn) -> M.TopicOut | M.ToolError:
         try:
             from . import store as _store
             return _topic(await _t(_store.topic_write, root, arg.dir, arg.description))
@@ -238,7 +233,7 @@ def build_server(root: Path, *, logger: ToolLogger | None = None) -> MCPServer:
               title="Postit: Create",
               description="Create a new postit note. Use after learning something you'll want to recall across sessions (a cliffnote, a decision, a reference URL).",
               annotations=_ann())
-    async def postit_create(arg: M.PostitCreateIn) -> Union[M.PostitOut, M.ToolError]:
+    async def postit_create(arg: M.PostitCreateIn) -> M.PostitOut | M.ToolError:
         try:
             from . import store as _store
             return _note(await _t(_store.postit_create, root, arg.name, arg.body, arg.dir))
@@ -249,7 +244,7 @@ def build_server(root: Path, *, logger: ToolLogger | None = None) -> MCPServer:
               title="Postit: Append",
               description="Append content to the end of an existing postit's body without rewriting it. Read-modify-write under a per-note lock: safe under concurrent appends. A newline is inserted between the existing body and the new content when the existing body is non-empty and lacks a trailing newline.",
               annotations=_ann(destructive=True))
-    async def postit_append(arg: M.PostitAppendIn) -> Union[M.PostitOut, M.ToolError]:
+    async def postit_append(arg: M.PostitAppendIn) -> M.PostitOut | M.ToolError:
         try:
             from . import store as _store
             return _note(await _t(_store.postit_append, root, arg.name, arg.content, arg.dir))
@@ -260,7 +255,7 @@ def build_server(root: Path, *, logger: ToolLogger | None = None) -> MCPServer:
               title="Postit: Overwrite",
               description="Replace a postit's entire body with new content. The previous content is discarded atomically (tmp + fsync + rename). Use postit.append when you want to add to the existing body instead of replacing it.",
               annotations=_ann(destructive=True))
-    async def postit_overwrite(arg: M.PostitOverwriteIn) -> Union[M.PostitOut, M.ToolError]:
+    async def postit_overwrite(arg: M.PostitOverwriteIn) -> M.PostitOut | M.ToolError:
         try:
             from . import store as _store
             return _note(await _t(_store.postit_overwrite, root, arg.name, arg.content, arg.dir))
@@ -271,7 +266,7 @@ def build_server(root: Path, *, logger: ToolLogger | None = None) -> MCPServer:
               title="Postit: Rename",
               description="Rename a postit within the same topic.",
               annotations=_ann(idempotent=True))
-    async def postit_rename(arg: M.PostitRenameIn) -> Union[M.PostitOut, M.ToolError]:
+    async def postit_rename(arg: M.PostitRenameIn) -> M.PostitOut | M.ToolError:
         try:
             from . import store as _store
             return _note(await _t(_store.postit_rename, root, arg.name, arg.new_name, arg.dir))
@@ -282,7 +277,7 @@ def build_server(root: Path, *, logger: ToolLogger | None = None) -> MCPServer:
               title="Postit: Delete",
               description="Delete a postit note.",
               annotations=_ann(destructive=True, idempotent=True))
-    async def postit_delete(arg: M.PostitDeleteIn) -> Union[M.OkOut, M.ToolError]:
+    async def postit_delete(arg: M.PostitDeleteIn) -> M.OkOut | M.ToolError:
         try:
             from . import store as _store
             await _t(_store.postit_delete, root, arg.name, arg.dir)
@@ -294,7 +289,7 @@ def build_server(root: Path, *, logger: ToolLogger | None = None) -> MCPServer:
               title="Postit: Read",
               description="Read a postit's full body. For large bodies prefer `postit.read_section` or `postit.read_lines` instead.",
               annotations=_ann(read_only=True, idempotent=True))
-    async def postit_read(arg: M.PostitReadIn) -> Union[M.PostitOut, M.ToolError]:
+    async def postit_read(arg: M.PostitReadIn) -> M.PostitOut | M.ToolError:
         try:
             from . import store as _store
             return _note(await _t(_store.postit_read, root, arg.name, arg.dir))
@@ -305,7 +300,7 @@ def build_server(root: Path, *, logger: ToolLogger | None = None) -> MCPServer:
               title="Postit: Read Section",
               description="Read one section of a postit by heading text. Match is case-insensitive and exact (not a substring); use `level` to disambiguate same-text headings at different depths.",
               annotations=_ann(read_only=True, idempotent=True))
-    async def postit_read_section(arg: M.PostitReadSectionIn) -> Union[M.SectionOut, M.ToolError]:
+    async def postit_read_section(arg: M.PostitReadSectionIn) -> M.SectionOut | M.ToolError:
         try:
             from . import store as _store
             r = await _t(
@@ -324,7 +319,7 @@ def build_server(root: Path, *, logger: ToolLogger | None = None) -> MCPServer:
               title="Postit: Read Lines",
               description="Read a line range from a postit.",
               annotations=_ann(read_only=True, idempotent=True))
-    async def postit_read_lines(arg: M.PostitReadLinesIn) -> Union[M.LinesOut, M.ToolError]:
+    async def postit_read_lines(arg: M.PostitReadLinesIn) -> M.LinesOut | M.ToolError:
         try:
             from . import store as _store
             r = await _t(_store.postit_read_lines, root, arg.name, arg.start, arg.end, arg.dir)
@@ -340,7 +335,7 @@ def build_server(root: Path, *, logger: ToolLogger | None = None) -> MCPServer:
               title="Postit: List",
               description="List topic contents, or list headings of one postit.",
               annotations=_ann(read_only=True, idempotent=True))
-    async def postit_ls(arg: M.PostitLsIn) -> Union[M.LsOut, M.ToolError]:
+    async def postit_ls(arg: M.PostitLsIn) -> M.LsOut | M.ToolError:
         try:
             from . import store as _store
             out = await _t(
@@ -367,7 +362,7 @@ def build_server(root: Path, *, logger: ToolLogger | None = None) -> MCPServer:
               title="Postit: Search",
               description="Search postit names and bodies by regex. Scope with `dir` (subtree root) and `recursive`; `limit` caps hit count. Pattern is case-insensitive unless prefixed `(?-i)`.",
               annotations=_ann(read_only=True, idempotent=True))
-    async def postit_search(arg: M.PostitSearchIn) -> Union[list[M.SearchHit], M.ToolError]:
+    async def postit_search(arg: M.PostitSearchIn) -> list[M.SearchHit] | M.ToolError:
         try:
             hits = await _t(
                 search_impl,
@@ -394,7 +389,7 @@ def build_server(root: Path, *, logger: ToolLogger | None = None) -> MCPServer:
               title="Postit: Recent",
               description="Return most-recently-modified postits. Call at session start to reload context before deciding what to look up.",
               annotations=_ann(read_only=True, idempotent=True))
-    async def postit_recent(arg: M.PostitRecentIn) -> Union[list[M.RecentItem], M.ToolError]:
+    async def postit_recent(arg: M.PostitRecentIn) -> list[M.RecentItem] | M.ToolError:
         try:
             items = await _t(recent_impl, root, arg.limit, arg.dir)
             return [
@@ -419,7 +414,7 @@ def build_server(root: Path, *, logger: ToolLogger | None = None) -> MCPServer:
                   "alongside `postit.recent` to pin the surface you're talking to."
               ),
               annotations=_ann(read_only=True, idempotent=True))
-    async def postit_capabilities(arg: M.CapabilitiesIn) -> Union[M.CapabilitiesOut, M.ToolError]:
+    async def postit_capabilities(arg: M.CapabilitiesIn) -> M.CapabilitiesOut | M.ToolError:
         items = []
         for name, tool in app._tool_manager._tools.items():
             a = tool.annotations

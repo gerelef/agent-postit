@@ -22,7 +22,6 @@ from .paths import (
     NOTE_SUFFIX,
     ROOT,
     TOPIC_FILENAME,
-    normalize_dir,
 )
 from .store import StoreError, _normalize_dir
 
