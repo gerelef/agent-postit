@@ -7,9 +7,6 @@ grants — those live in the client's profile config (Zed
 The server has no caller identity (no auth on any transport) and so
 cannot honestly echo any caller's grant set; the probe reports the
 server's own surface only.
-
-See `docs/complaint-2-capabilities-probe.md` for the design verdict
-that bounded the shape.
 """
 
 from __future__ import annotations

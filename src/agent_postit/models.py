@@ -163,6 +163,9 @@ class Heading(BaseModel):
 
 
 class LsNoteModeOut(BaseModel):
+    """Single-note mode of `postit.ls`: returned when both `dir` and `name`
+    are given, carrying that note's headings + total line count instead of
+    a directory listing. Not a session-capability marker."""
     name: str
     dir: str
     total_lines: int
@@ -219,8 +222,8 @@ class RecentItem(BaseModel):
 # NOT report per-caller grants, which live in the client (Zed profile config,
 # `tool_permissions`, per-profile `context_servers.<server>.tools`). The
 # server has no caller identity (no auth on any transport) and so cannot
-# honestly echo the grant set of any particular caller. See
-# `docs/complaint-2-capabilities-probe.md`.
+# honestly echo the grant set of any particular caller.
+
 
 
 class CapabilitiesIn(BaseModel):

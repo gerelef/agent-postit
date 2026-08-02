@@ -54,6 +54,26 @@ def test_all_tools_registered(server):
     assert names == EXPECTED_TOOLS, names.symmetric_difference(EXPECTED_TOOLS)
 
 
+# Per-tool `description` trigger clauses an LLM genuinely needs pre-call.
+# Asserting substrings rather than exact strings so cosmetic punctuation
+# tweaks don't break the test; the clauses are what matters. See
+# `projects/agent-postit/tool-descriptor-simplification`.
+EXPECTED_DESCRIPTION_CLAUSES = {
+    "postit.read_section": "case-insensitive",
+    "postit.search": "recursive",
+    "postit.read": "postit.read_section",
+}
+
+
+def test_tool_descriptions_carry_pre_call_clauses(server):
+    ts = asyncio.run(server.list_tools())
+    by_name = {t.name: t for t in ts}
+    for tool_name, clause in EXPECTED_DESCRIPTION_CLAUSES.items():
+        assert tool_name in by_name, tool_name
+        desc = by_name[tool_name].description or ""
+        assert clause in desc, f"{tool_name}: missing clause {clause!r} in {desc!r}"
+
+
 def test_topic_create_then_read(server):
     r = asyncio.run(
         server.call_tool("topic.create", {"arg": {"dir": "t1", "description": "d"}})

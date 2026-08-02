@@ -292,7 +292,7 @@ def build_server(root: Path, *, logger: ToolLogger | None = None) -> MCPServer:
 
     @app.tool(name="postit.read",
               title="Postit: Read",
-              description="Read a postit's full body.",
+              description="Read a postit's full body. For large bodies prefer `postit.read_section` or `postit.read_lines` instead.",
               annotations=_ann(read_only=True, idempotent=True))
     async def postit_read(arg: M.PostitReadIn) -> Union[M.PostitOut, M.ToolError]:
         try:
@@ -303,7 +303,7 @@ def build_server(root: Path, *, logger: ToolLogger | None = None) -> MCPServer:
 
     @app.tool(name="postit.read_section",
               title="Postit: Read Section",
-              description="Read one section of a postit by heading text.",
+              description="Read one section of a postit by heading text. Match is case-insensitive and exact (not a substring); use `level` to disambiguate same-text headings at different depths.",
               annotations=_ann(read_only=True, idempotent=True))
     async def postit_read_section(arg: M.PostitReadSectionIn) -> Union[M.SectionOut, M.ToolError]:
         try:
@@ -365,7 +365,7 @@ def build_server(root: Path, *, logger: ToolLogger | None = None) -> MCPServer:
 
     @app.tool(name="postit.search",
               title="Postit: Search",
-              description="Search postit names and bodies by regex.",
+              description="Search postit names and bodies by regex. Scope with `dir` (subtree root) and `recursive`; `limit` caps hit count. Pattern is case-insensitive unless prefixed `(?-i)`.",
               annotations=_ann(read_only=True, idempotent=True))
     async def postit_search(arg: M.PostitSearchIn) -> Union[list[M.SearchHit], M.ToolError]:
         try:
