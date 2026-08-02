@@ -13,9 +13,11 @@
 # Logs:
 #   journalctl --user -u agent-postit.service -f
 #
-# Edit the Image= line below to point at your own tag, e.g.
-# `agent-postit:dev` after you `podman build --format docker -t agent-postit:dev .`.
-# Everything else is meant to need no editing.
+# The Image= line below pulls the published release image from Docker Hub
+# (docker.io/gerelef/agent-postit:v1.0.0). Pin to `:latest` to float on the
+# rolling tag, or to a local tag (e.g. `agent-postit:dev`) after you
+# `podman build --format docker -t agent-postit:dev .`. Everything else
+# is meant to need no editing.
 #
 # Requires podman 4.4+ (quadlet generator) and the user systemd session.
 # A --user service is killed when your logsession ends *unless* you also
@@ -28,7 +30,7 @@ Wants=network-online.target
 After=network-online.target
 
 [Container]
-Image=agent-postit:latest
+Image=docker.io/gerelef/agent-postit:v1.0.0
 ContainerName=agent-postit
 # Host-exposure knob. The `127.0.0.1:` prefix is the loopback guarantee —
 # do not drop it unless you intend to expose the port to other hosts

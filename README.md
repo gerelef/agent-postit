@@ -49,8 +49,43 @@ POSTIT_ROOT=/var/lib/agent-postit POSTIT_PORT=8011 uv run python -m agent_postit
 
 ### Container (podman or docker)
 
-The repo ships a prod-ready multi-stage `Dockerfile`. `Containerfile` is
-a symlink to it (podman convention). Build:
+A prod-ready multi-stage image is published on Docker Hub at
+[`gerelef/agent-postit`](https://hub.docker.com/repository/docker/gerelef/agent-postit).
+Tags track releases; `:latest` rolls forward with each one, and tagged
+releases (e.g. `:v1.0.0`) are immutable. Pull:
+
+```sh
+podman pull docker.io/gerelef/agent-postit:v1.0.0
+# or, to float on the rolling tag:
+podman pull docker.io/gerelef/agent-postit:latest
+# docker is identical (docker.io/ is the default registry):
+docker pull gerelef/agent-postit:v1.0.0
+```
+
+Run (HTTP transport — bind loopback on the host side, no `-i`, no `-t`):
+
+```sh
+podman run --rm --name agent-postit \
+  -p 127.0.0.1:8000:8000 \
+  -v ~/.agent-postit:/data:Z \
+  docker.io/gerelef/agent-postit:v1.0.0
+
+# docker works the same (drop the :Z suffix):
+docker run --rm --name agent-postit \
+  -p 127.0.0.1:8000:8000 \
+  -v ~/.agent-postit:/data \
+  gerelef/agent-postit:v1.0.0
+```
+
+The `127.0.0.1:` prefix on the publish flag is the loopback guarantee —
+do not drop it unless you intend to expose the port to other hosts
+(and have a reverse proxy with auth in front).
+
+##### Building from source (optional)
+
+The repo also ships a multi-stage `Dockerfile`; `Containerfile` is a
+symlink to it (podman convention). Use this only if you want a local
+build or a custom tag — the published image above is the same Dockerfile.
 
 ```sh
 podman build --format docker -t agent-postit:latest .
@@ -62,25 +97,6 @@ docker build -t agent-postit:latest .
 `HEALTHCHECK` instruction in the `Dockerfile` is honored (OCI format, the
 podman default, has no `HEALTHCHECK` field and silently drops it).
 
-Run (HTTP transport — bind loopback on the host side, no `-i`, no `-t`):
-
-```sh
-podman run --rm --name agent-postit \
-  -p 127.0.0.1:8000:8000 \
-  -v ~/.agent-postit:/data:Z \
-  agent-postit:latest
-
-# docker works the same (drop the :Z suffix):
-docker run --rm --name agent-postit \
-  -p 127.0.0.1:8000:8000 \
-  -v ~/.agent-postit:/data \
-  agent-postit:latest
-```
-
-The `127.0.0.1:` prefix on the publish flag is the loopback guarantee —
-do not drop it unless you intend to expose the port to other hosts
-(and have a reverse proxy with auth in front).
-
 ### Under `systemd --user` (rootless quadlet)
 
 A reference rootless quadlet is shipped at
@@ -90,7 +106,9 @@ Quadlet (podman 4.4+) is podman's native systemd integration: drop a
 and the podman generator emits a regular `agent-postit.service` from it
 on boot — no hand-written `podman run` line in the unit.
 
-Build the `agent-postit:latest` image, install the quadlet file, and start:
+The shipped quadlet pulls `docker.io/gerelef/agent-postit:v1.0.0` from
+Docker Hub by default (edit `Image=` for a different tag or a local
+build). Install and start:
 
 ```sh
 mkdir -p ~/.config/containers/systemd
@@ -100,6 +118,10 @@ systemctl --user enable --now agent-postit.service
 journalctl --user -u agent-postit.service -f  # follows stdout/uvicorn
 systemctl --user status agent-postit.service  # verify everything works
 ```
+
+To pin a different tag, change `Image=` in the installed
+`agent-postit.container` (or the local copy under `contrib/`) and
+`systemctl --user daemon-reload && systemctl --user restart agent-postit.service`.
 
 ---
 
