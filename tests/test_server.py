@@ -34,7 +34,8 @@ EXPECTED_TOOLS = {
     "topic.read",
     "topic.write",
     "postit.create",
-    "postit.update_body",
+    "postit.append",
+    "postit.overwrite",
     "postit.rename",
     "postit.delete",
     "postit.read",
@@ -43,6 +44,7 @@ EXPECTED_TOOLS = {
     "postit.ls",
     "postit.search",
     "postit.recent",
+    "postit.capabilities",
 }
 
 
@@ -107,7 +109,7 @@ def test_postit_create_dir_missing(server):
     assert obj["code"] == "dir_missing"
 
 
-def test_postit_update_body_append(server):
+def test_postit_append(server):
     asyncio.run(
         server.call_tool("topic.create", {"arg": {"dir": "t1", "description": "d"}})
     )
@@ -115,9 +117,22 @@ def test_postit_update_body_append(server):
         server.call_tool("postit.create", {"arg": {"name": "n", "body": "a", "dir": "t1"}})
     )
     r = asyncio.run(
-        server.call_tool("postit.update_body", {"arg": {"name": "n", "dir": "t1", "mode": "append", "content": "b"}})
+        server.call_tool("postit.append", {"arg": {"name": "n", "dir": "t1", "content": "b"}})
     )
     assert r.structured_content["result"]["body"] == "a\nb"
+
+
+def test_postit_overwrite(server):
+    asyncio.run(
+        server.call_tool("topic.create", {"arg": {"dir": "t1", "description": "d"}})
+    )
+    asyncio.run(
+        server.call_tool("postit.create", {"arg": {"name": "n", "body": "old", "dir": "t1"}})
+    )
+    r = asyncio.run(
+        server.call_tool("postit.overwrite", {"arg": {"name": "n", "dir": "t1", "content": "new"}})
+    )
+    assert r.structured_content["result"]["body"] == "new"
 
 
 def test_postit_rename(server):

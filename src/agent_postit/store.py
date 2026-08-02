@@ -62,14 +62,13 @@ _TOPIC_PREVIEW_LEN = 80
 #
 # HTTP transport means many concurrent tool calls against the same root.
 # Per-note integrity is already protected by `_atomic_write_text` (tmp +
-# fsync + os.replace), but multi-step ops (`update_body` append is
+# fsync + os.replace), but multi-step ops (`postit.append` is
 # read-modify-write, `postit.rename` touches two names, `postit.create`
 # has a check-then-write race) need a process-wide critical section. We
 # use `threading.RLock` keyed by `f"{normalized_dir}/{lowercase_name}"`;
 # reads are lock-free (atomic replace guarantees they see a complete
 # file, old or new). Single-instance service → one process owns all
-# locks; no cross-process locking is attempted. See
-# `docs/http-migration.md` §4 for the rationale.
+# locks; no cross-process locking is attempted.
 
 _NOTE_LOCKS: dict[str, threading.RLock] = {}
 _LOCKS_GUARD = threading.Lock()
@@ -445,41 +444,64 @@ def postit_create(root: Path, name: str, body: str, dir: str | None = None) -> N
     return NoteInfo(name=n, dir=d, body=body, mtime=mtime, size=size)
 
 
-def postit_update_body(
+def postit_append(
     root: Path,
     name: str,
     content: str,
     dir: str | None = None,
-    mode: str = "overwrite",
 ) -> NoteInfo:
-    if mode not in ("append", "overwrite"):
-        raise StoreError("invalid_path", f"mode must be append or overwrite (got {mode!r})")
+    """Append `content` to a note's body (read-modify-write under the
+    per-note lock).
+
+    Without the lock two concurrent appenders would both read the same
+    body, both append, and one would lose its append on the losing
+    `os.replace`. The lock makes appends serial w.r.t. each other and
+    w.r.t. create/rename/delete on the same identity.
+    """
     n = _validate_name(name)
     d = _norm_dir(dir)
     if not isinstance(content, str):
         raise StoreError("invalid_path", "content must be a string")
     target = _note_path(root, d, n)
-    # The append mode is read-modify-write: without the per-note lock two
-    # concurrent appenders would both read the same body, both append, and
-    # one would lose its append on the losing `os.replace`. The lock makes
-    # appends serial w.r.t. each other and w.r.t. create/rename/delete on
-    # the same identity.
     with _with_note_locks(_note_lock_key(d, n)):
         if not target.is_file():
             raise StoreError("not_found", f"note {n!r} not found in {d!r}")
         existing = _read_text(target) if target.stat().st_size > 0 else ""
-        if mode == "overwrite":
-            new_body = content
+        if existing and not existing.endswith("\n"):
+            new_body = existing + "\n" + content
         else:
-            if existing and not existing.endswith("\n"):
-                new_body = existing + "\n" + content
-            else:
-                new_body = existing + content
+            new_body = existing + content
         if _byte_len(new_body) > MAX_BODY_BYTES:
             raise StoreError("too_large", "resulting body exceeds 1 MiB cap")
         _atomic_write_text(target, new_body)
         size, mtime = _stat_size_mtime(target)
     return NoteInfo(name=n, dir=d, body=new_body, mtime=mtime, size=size)
+
+
+def postit_overwrite(
+    root: Path,
+    name: str,
+    content: str,
+    dir: str | None = None,
+) -> NoteInfo:
+    """Replace a note's body with `content` (atomic).
+
+    Held under the per-note lock so overwrites are serial w.r.t.
+    concurrent create/append/rename/delete on the same identity.
+    """
+    n = _validate_name(name)
+    d = _norm_dir(dir)
+    if not isinstance(content, str):
+        raise StoreError("invalid_path", "content must be a string")
+    target = _note_path(root, d, n)
+    with _with_note_locks(_note_lock_key(d, n)):
+        if not target.is_file():
+            raise StoreError("not_found", f"note {n!r} not found in {d!r}")
+        if _byte_len(content) > MAX_BODY_BYTES:
+            raise StoreError("too_large", "resulting body exceeds 1 MiB cap")
+        _atomic_write_text(target, content)
+        size, mtime = _stat_size_mtime(target)
+    return NoteInfo(name=n, dir=d, body=content, mtime=mtime, size=size)
 
 
 def postit_rename(root: Path, name: str, new_name: str, dir: str | None = None) -> NoteInfo:
@@ -492,7 +514,7 @@ def postit_rename(root: Path, name: str, new_name: str, dir: str | None = None) 
     # simultaneous renames `A→B` and `B→A` can't self-deadlock. The
     # `no_op` (src == dst) and `already_exists` (dst present) checks both
     # run inside the critical section so the rename is atomic w.r.t.
-    # concurrent `create`/`update_body`/`delete` on either name.
+    # concurrent `create`/`append`/`delete` on either name.
     with _with_note_locks(_note_lock_key(d, n), _note_lock_key(d, new_n)):
         if not src.is_file():
             raise StoreError("not_found", f"note {n!r} not found in {d!r}")

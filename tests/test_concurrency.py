@@ -6,7 +6,7 @@ the per-note `threading.RLock` + `asyncio.to_thread` story holds:
 
 * parallel `postit.create` of the same name → exactly one success,
   the rest `already_exists`;
-* parallel `postit.update_body` appends to the same note → no lost
+* parallel `postit.append` to the same note → no lost
   appends (the file body contains every appended fragment, once
   each, in call order — order is serialised by the per-note lock so
   the observable ordering is some permutation of the inputs);
@@ -75,11 +75,10 @@ def test_parallel_postit_create_exactly_one_winner(server):
 
 
 def test_parallel_append_no_lost_writes(server):
-    """N concurrent `update_body` appends of distinct fragments → the
+    """N concurrent `postit.append` calls of distinct fragments → the
     file body contains every fragment exactly once. Without the lock,
     two appends racing on the same body both read the old content,
-    both append, one `os.replace` wins → the other's append is lost
-    (migration doc §4.1)."""
+    both append, one `os.replace` wins → the other's append is lost."""
     _run(server.call_tool("topic.create", {"arg": {"dir": "t", "description": "d"}}))
     _run(server.call_tool("postit.create", {"arg": {"name": "log", "body": "", "dir": "t"}}))
 
@@ -88,8 +87,8 @@ def test_parallel_append_no_lost_writes(server):
 
     async def append_all():
         await asyncio.gather(*[
-            _gather_call(server, "postit.update_body",
-                         {"name": "log", "dir": "t", "mode": "append", "content": frag})
+            _gather_call(server, "postit.append",
+                         {"name": "log", "dir": "t", "content": frag})
             for frag in fragments
         ])
 

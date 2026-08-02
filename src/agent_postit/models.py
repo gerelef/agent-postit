@@ -58,10 +58,17 @@ class PostitCreateIn(BaseModel):
     dir: str | None = None  # default root
 
 
-class PostitUpdateBodyIn(BaseModel):
+class PostitAppendIn(BaseModel):
+    """Input for `postit.append` — adds `content` to an existing note."""
     name: str
     dir: str | None = None
-    mode: Literal["append", "overwrite"] = "overwrite"
+    content: str
+
+
+class PostitOverwriteIn(BaseModel):
+    """Input for `postit.overwrite` — replaces a note's body with `content`."""
+    name: str
+    dir: str | None = None
     content: str
 
 
@@ -201,6 +208,41 @@ class RecentItem(BaseModel):
     name: str
     mtime: float
     size: int
+
+
+# --------------------------------------------------------------------------- #
+# Capabilities probe                                                           #
+# --------------------------------------------------------------------------- #
+#
+# Reports the server's *own* full registered surface plus its metadata. This
+# is a read-only summary of what the server can execute; it deliberately does
+# NOT report per-caller grants, which live in the client (Zed profile config,
+# `tool_permissions`, per-profile `context_servers.<server>.tools`). The
+# server has no caller identity (no auth on any transport) and so cannot
+# honestly echo the grant set of any particular caller. See
+# `docs/complaint-2-capabilities-probe.md`.
+
+
+class CapabilitiesIn(BaseModel):
+    """No arguments. The verb takes an empty model for shape consistency
+    with the other tools (FastMCP tool fns receive a single `arg` object)."""
+
+
+class ToolSummary(BaseModel):
+    name: str
+    title: str | None = None
+    read_only: bool = False
+    destructive: bool = False
+    idempotent: bool = False
+    open_world: bool = False
+
+
+class CapabilitiesOut(BaseModel):
+    server_name: str
+    server_version: str
+    store_root: str
+    tool_count: int
+    tools: list[ToolSummary]
 
 
 # --------------------------------------------------------------------------- #

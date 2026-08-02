@@ -114,7 +114,7 @@ INSTRUCTIONS = (
 # time), wrong under HTTP (many concurrent calls). We push every store call
 # through `asyncio.to_thread` so it runs on the default thread pool, where
 # `threading.RLock` is the right primitive and the event loop stays free to
-# serve other sessions. See `docs/http-migration.md` §4.4.
+# serve other sessions.
 
 
 def _t(fn, *args, **kwargs):
@@ -198,7 +198,7 @@ def build_server(root: Path, *, logger: ToolLogger | None = None) -> MCPServer:
     # --- Topic verbs --------------------------------------------------------
     @app.tool(name="topic.create",
               title="Topic: Create",
-              description="Create a new topic directory with a short description.",
+              description="Create a new topic directory with a short description. Use when starting a new concern, so later notes have a place to go.",
               annotations=_ann(idempotent=True))
     async def topic_create(arg: M.TopicCreateIn) -> Union[M.TopicOut, M.ToolError]:
         try:
@@ -236,7 +236,7 @@ def build_server(root: Path, *, logger: ToolLogger | None = None) -> MCPServer:
     # --- Postit CRUD --------------------------------------------------------
     @app.tool(name="postit.create",
               title="Postit: Create",
-              description="Create a new postit note.",
+              description="Create a new postit note. Use after learning something you'll want to recall across sessions (a cliffnote, a decision, a reference URL).",
               annotations=_ann())
     async def postit_create(arg: M.PostitCreateIn) -> Union[M.PostitOut, M.ToolError]:
         try:
@@ -245,23 +245,25 @@ def build_server(root: Path, *, logger: ToolLogger | None = None) -> MCPServer:
         except (StoreError, PathError) as e:
             return _error(e)
 
-    @app.tool(name="postit.update_body",
-              title="Postit: Update Body",
-              description="Append to or overwrite a postit's body.",
+    @app.tool(name="postit.append",
+              title="Postit: Append",
+              description="Append content to the end of an existing postit's body without rewriting it. Read-modify-write under a per-note lock: safe under concurrent appends. A newline is inserted between the existing body and the new content when the existing body is non-empty and lacks a trailing newline.",
               annotations=_ann(destructive=True))
-    async def postit_update_body(arg: M.PostitUpdateBodyIn) -> Union[M.PostitOut, M.ToolError]:
+    async def postit_append(arg: M.PostitAppendIn) -> Union[M.PostitOut, M.ToolError]:
         try:
             from . import store as _store
-            return _note(
-                await _t(
-                    _store.postit_update_body,
-                    root,
-                    arg.name,
-                    arg.content,
-                    arg.dir,
-                    arg.mode,
-                )
-            )
+            return _note(await _t(_store.postit_append, root, arg.name, arg.content, arg.dir))
+        except (StoreError, PathError) as e:
+            return _error(e)
+
+    @app.tool(name="postit.overwrite",
+              title="Postit: Overwrite",
+              description="Replace a postit's entire body with new content. The previous content is discarded atomically (tmp + fsync + rename). Use postit.append when you want to add to the existing body instead of replacing it.",
+              annotations=_ann(destructive=True))
+    async def postit_overwrite(arg: M.PostitOverwriteIn) -> Union[M.PostitOut, M.ToolError]:
+        try:
+            from . import store as _store
+            return _note(await _t(_store.postit_overwrite, root, arg.name, arg.content, arg.dir))
         except (StoreError, PathError) as e:
             return _error(e)
 
@@ -390,7 +392,7 @@ def build_server(root: Path, *, logger: ToolLogger | None = None) -> MCPServer:
 
     @app.tool(name="postit.recent",
               title="Postit: Recent",
-              description="Return most-recently-modified postits.",
+              description="Return most-recently-modified postits. Call at session start to reload context before deciding what to look up.",
               annotations=_ann(read_only=True, idempotent=True))
     async def postit_recent(arg: M.PostitRecentIn) -> Union[list[M.RecentItem], M.ToolError]:
         try:
@@ -401,6 +403,41 @@ def build_server(root: Path, *, logger: ToolLogger | None = None) -> MCPServer:
             ]
         except (StoreError, PathError) as e:
             return _error(e)
+
+    # --- Capabilities probe ------------------------------------------------
+    @app.tool(name="postit.capabilities",
+              title="Postit: Capabilities",
+              description=(
+                  "Return this server's full registered tool surface plus server "
+                  "metadata (name, version, store_root). Read-only summary of what "
+                  "the server can execute. Does NOT report per-caller grants - which "
+                  "tools THIS caller is allowed to invoke is governed client-side by "
+                  "the editor's profile config (Zed: `tool_permissions` + per-profile "
+                  "`context_servers.<server>.tools`), not by anything this server can "
+                  "report. Use `tools/list` for full input schemas; this verb is the "
+                  "lighter effect-hint summary. Safe to call at session start "
+                  "alongside `postit.recent` to pin the surface you're talking to."
+              ),
+              annotations=_ann(read_only=True, idempotent=True))
+    async def postit_capabilities(arg: M.CapabilitiesIn) -> Union[M.CapabilitiesOut, M.ToolError]:
+        items = []
+        for name, tool in app._tool_manager._tools.items():
+            a = tool.annotations
+            items.append(M.ToolSummary(
+                name=name,
+                title=tool.title,
+                read_only=bool(a.read_only_hint) if a else False,
+                destructive=bool(a.destructive_hint) if a else False,
+                idempotent=bool(a.idempotent_hint) if a else False,
+                open_world=bool(a.open_world_hint) if a else False,
+            ))
+        return M.CapabilitiesOut(
+            server_name=app.name,
+            server_version=app.version,
+            store_root=str(root.resolve()),
+            tool_count=len(items),
+            tools=items,
+        )
 
     _instrument(app, logger)
     return app

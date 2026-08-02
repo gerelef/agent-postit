@@ -11,8 +11,7 @@ On the error path `error_code` is added:
      "duration_ms":0.4,"error_code":"already_exists"}
 
 No note bodies are logged — the log records only metadata (tool name, the
-`dir` / `name` arguments, outcome, duration). See `docs/http-migration.md`
-§5.1.
+`dir` / `name` arguments, outcome, duration).
 
 Design notes:
 

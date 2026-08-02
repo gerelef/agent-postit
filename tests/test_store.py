@@ -217,40 +217,33 @@ class TestPostitCreate:
 
 
 # --------------------------------------------------------------------------- #
-# postit.update_body                                                          #
+# postit.append                                                              #
 # --------------------------------------------------------------------------- #
 
 
-class TestPostitUpdateBody:
-    def test_overwrite(self, root: Path):
-        _topic(root, "t1")
-        store.postit_create(root, "n", "old", dir="t1")
-        info = store.postit_update_body(root, "n", "new", dir="t1", mode="overwrite")
-        assert info.body == "new"
-        assert (root / "t1" / "n.md").read_text() == "new"
-
+class TestPostitAppend:
     def test_append_no_existing_newline(self, root: Path):
         _topic(root, "t1")
         store.postit_create(root, "n", "line1", dir="t1")  # no trailing \n
-        info = store.postit_update_body(root, "n", "line2", dir="t1", mode="append")
+        info = store.postit_append(root, "n", "line2", dir="t1")
         assert info.body == "line1\nline2"
 
     def test_append_with_existing_newline(self, root: Path):
         _topic(root, "t1")
         store.postit_create(root, "n", "line1\n", dir="t1")
-        info = store.postit_update_body(root, "n", "line2", dir="t1", mode="append")
+        info = store.postit_append(root, "n", "line2", dir="t1")
         assert info.body == "line1\nline2"
 
     def test_append_empty_existing(self, root: Path):
         _topic(root, "t1")
         store.postit_create(root, "n", "", dir="t1")
-        info = store.postit_update_body(root, "n", "x", dir="t1", mode="append")
+        info = store.postit_append(root, "n", "x", dir="t1")
         assert info.body == "x"
 
     def test_not_found(self, root: Path):
         _topic(root, "t1")
         with pytest.raises(StoreError) as exc:
-            store.postit_update_body(root, "n", "x", dir="t1")
+            store.postit_append(root, "n", "x", dir="t1")
         assert exc.value.code == "not_found"
 
     def test_too_large_on_append(self, root: Path):
@@ -258,7 +251,42 @@ class TestPostitUpdateBody:
         store.postit_create(root, "n", "x", dir="t1")
         big = "x" * (store.MAX_BODY_BYTES + 1)
         with pytest.raises(StoreError) as exc:
-            store.postit_update_body(root, "n", big, dir="t1", mode="append")
+            store.postit_append(root, "n", big, dir="t1")
+        assert exc.value.code == "too_large"
+
+
+# --------------------------------------------------------------------------- #
+# postit.overwrite                                                           #
+# --------------------------------------------------------------------------- #
+
+
+class TestPostitOverwrite:
+    def test_overwrite(self, root: Path):
+        _topic(root, "t1")
+        store.postit_create(root, "n", "old", dir="t1")
+        info = store.postit_overwrite(root, "n", "new", dir="t1")
+        assert info.body == "new"
+        assert (root / "t1" / "n.md").read_text() == "new"
+
+    def test_overwrite_empty(self, root: Path):
+        _topic(root, "t1")
+        store.postit_create(root, "n", "old", dir="t1")
+        info = store.postit_overwrite(root, "n", "", dir="t1")
+        assert info.body == ""
+        assert (root / "t1" / "n.md").read_text() == ""
+
+    def test_not_found(self, root: Path):
+        _topic(root, "t1")
+        with pytest.raises(StoreError) as exc:
+            store.postit_overwrite(root, "n", "x", dir="t1")
+        assert exc.value.code == "not_found"
+
+    def test_too_large_on_overwrite(self, root: Path):
+        _topic(root, "t1")
+        store.postit_create(root, "n", "x", dir="t1")
+        big = "x" * (store.MAX_BODY_BYTES + 1)
+        with pytest.raises(StoreError) as exc:
+            store.postit_overwrite(root, "n", big, dir="t1")
         assert exc.value.code == "too_large"
 
     def test_atomic_write_leaves_no_tmp(self, root: Path):
@@ -267,11 +295,18 @@ class TestPostitUpdateBody:
         store.postit_create(root, "n", "body", dir="t1")
         note = root / "t1" / "n.md"
         # No stray tmp files around the note after a write.
-        store.postit_update_body(root, "n", "body2", dir="t1", mode="overwrite")
+        store.postit_overwrite(root, "n", "body2", dir="t1")
         siblings = list(note.parent.iterdir())
         assert not any(name.endswith(".agentpostit.tmp") for name in
                        (p.name for p in siblings))
 
+
+# --------------------------------------------------------------------------- #
+# _atomic_write_text & fsync helpers                                         #
+# --------------------------------------------------------------------------- #
+
+
+class TestAtomicWriteHelpers:
     def test_atomic_write_cleans_tmp_on_failure(self, root: Path, monkeypatch):
         """On a raised error mid-write, tmp unlink still attempted."""
         _topic(root, "t1")

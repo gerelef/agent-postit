@@ -105,7 +105,7 @@ systemctl --user status agent-postit.service  # verify everything works
 
 ## Tools
 
-The server advertises **13 tools** under the `agent-postit` MCP server
+The server advertises **15 tools** under the `agent-postit` MCP server
 name. Tools surface to clients as `mcp:agent-postit:<tool>` (e.g.
 `mcp:agent-postit:postit.recent`). All tools take a single object
 argument named `arg` over the wire. Paths are addressed by `(dir, name)`
@@ -139,12 +139,22 @@ reading/listing/deleting it accepts any case. `TOPIC` is a reserved name
 - **`postit.create`** — `name` (required), `body` (required, may be
   `""`), `dir?`. Writes `<dir>/<name>.md` atomically. `dir_missing` if
   the dir is not a topic; `already_exists` if the file is there.
-- **`postit.update_body`** — `name` (required), `content` (required),
-  `mode` (`"append"` | `"overwrite"`, default `"overwrite"`), `dir?`.
-  `overwrite` writes atomically; `append` reads the existing body,
-  concatenates `content` (inserting a trailing newline if needed), and
-  writes back atomically behind a per-note lock. `not_found` if missing.
-  1 MiB cap on the resulting body (`too_large`).
+- **`postit.append`** — `name` (required), `content` (required), `dir?`.
+  Reads the existing body, concatenates `content` (inserting a trailing
+  newline when the existing body is non-empty and lacks one), and writes
+  back atomically behind a per-note lock — safe under concurrent appends.
+  `not_found` if the note is missing. 1 MiB cap on the resulting body
+  (`too_large`).
+- **`postit.overwrite`** — `name` (required), `content` (required),
+  `dir?`. Replaces the note's entire body with `content` (atomic write;
+  the previous body is discarded). Use `postit.append` when you want to
+  add to the body instead of replacing it. `not_found` if missing. 1 MiB
+  cap on the new body (`too_large`).
+
+  These were a single `postit.update_body` tool with a `mode` flag in
+  earlier releases. The flag did not translate cleanly to LLM tool use —
+  agents would drop or mis-pick the mode and silently clobber a note —
+  so it was split into two distinct tools with no shared argument.
 - **`postit.rename`** — `name` (required), `new_name` (required), `dir?`.
   Renames within the same directory. `no_op` if `new_name == name`;
   `already_exists` if the target is there. Same-dir only.
@@ -196,12 +206,27 @@ reading/listing/deleting it accepts any case. `TOPIC` is a reserved name
   returns the top `limit` as `{path, name, mtime, size}` with no body.
   Default `dir=root` returns every postit across the whole tree. Use at
   session start to reload context — body is deliberately not included.
+- **`postit.capabilities`** — no args. Read-only summary of what *this
+  server* can execute: returns `{server_name, server_version,
+  store_root, tool_count, tools[]}` where each `tools[]` entry is
+  `{name, title, read_only, destructive, idempotent, open_world}` —
+  the per-tool `ToolAnnotations` flattened. It is a lighter view than
+  `tools/list` (no input schemas) and pins a stable shape the client can
+  diff across versions. It does **not** report per-caller grants: which
+  tools *this caller* may invoke is governed client-side by the editor's
+  profile config (Zed: `tool_permissions` + per-profile
+  `context_servers.<server>.tools`). The server has no caller identity
+  (no auth on any transport) and so cannot honestly echo any caller's
+  grant set; the probe reports the server's own surface only. Safe to
+  call at session start alongside `postit.recent`.
 
 ### 'Hello World' notes for an agent that doesn't know where to start
 
 - At session start: call **`postit.recent`** with no args to see what
-  you noted last. Optional: `postit.ls` the root or a project topic to
-  see what topics exist.
+  you noted last, and **`postit.capabilities`** to pin the surface you're
+  talking to (server name/version/store_root + the full registered tool
+  list with effect hints). Optional: `postit.ls` the root or a project
+  topic to see what topics exist.
 - Want to peek at a note without pulling the whole body? `postit.ls`
   with `name` set gives you the table of contents; then `read_section`
   for the part you care about, or `read_lines` for an exact range.
@@ -264,6 +289,15 @@ open settings file`, or edit from **Settings → AI → MCP Servers**). HTTP
 servers live under `context_servers` with a `url`. The server must
 already be running — Zed does not spawn it.
 
+If you run the agent in Zed's **ask** profile, make sure the postit
+write/mutate tools are explicitly enabled for that profile (under
+`agent.profiles.<name>.context_servers.agent-postit.tools`) and that
+`tool_permissions` does not block them. A misconfigured profile can
+look identical to a server bug — silent permission denials, no error
+on the server side. Thee server itself has no auth and no awareness
+of which profile is calling; everything is a client-side permission
+question.
+
 ```jsonc
 {
     "context_servers": {
@@ -276,7 +310,7 @@ already be running — Zed does not spawn it.
 
 **Verify the server is live.** In Zed open **Settings → AI → MCP
 Servers** and watch the indicator dot next to `agent-postit`. Green with
-the tooltip "Server is active" means the handshake succeeded and the 13
+the tooltip "Server is active" means the handshake succeeded and the 15
 tools have been registered. Red indicates an error; hover for details
 (typically the server process is not running, or the port is wrong). A
 quick independent check: `curl -s http://127.0.0.1:8000/healthz`.
@@ -315,9 +349,11 @@ and the [tool permissions doc](https://zed.dev/docs/agent/tool-permissions).
                 "mcp:agent-postit:topic.create": { "default": "allow" },
                 "mcp:agent-postit:topic.write": { "default": "allow" },
                 "mcp:agent-postit:postit.create": { "default": "allow" },
+                "mcp:agent-postit:postit.capabilities": { "default": "allow" },
 
                 // agent-postit: confirm first
-                "mcp:agent-postit:postit.update_body": { "default": "confirm" },
+                "mcp:agent-postit:postit.append": { "default": "confirm" },
+                "mcp:agent-postit:postit.overwrite": { "default": "confirm" },
                 "mcp:agent-postit:postit.rename": { "default": "confirm" },
                 "mcp:agent-postit:postit.delete": { "default": "confirm" },
             },

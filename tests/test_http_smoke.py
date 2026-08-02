@@ -18,10 +18,9 @@ Streamable HTTP middleware:
 * `GET /healthz` returns 200 `"ok"` (mounted on the outer Starlette,
   outside `/mcp`).
 
-No auth, no `--token`, no 401 paths — they don't exist (see
-`docs/http-migration.md` §3). This test never touches `server.run` nor
-`__main__.main`: it drives the Starlette app directly so it is stable
-against changes in CLI plumbing.
+No auth, no `--token`, no 401 paths — they don't exist. This test never
+touches `server.run` nor `__main__.main`: it drives the Starlette app
+directly so it is stable against changes in CLI plumbing.
 """
 
 from __future__ import annotations

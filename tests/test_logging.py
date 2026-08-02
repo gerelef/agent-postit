@@ -2,8 +2,7 @@
 
 Drives `build_server` in-process (no uvicorn, no transport) with the
 `ToolLogger` pointed at a tmp file, fires one successful and one failed
-tool call, and asserts the JSON-lines emitted match the schema in
-`docs/http-migration.md` §5.1:
+tool call, and asserts the JSON-lines emitted match the schema:
 
 * required keys always present: `ts`, `session_id`, `tool`, `dir`,
   `name`, `outcome`, `duration_ms`;
@@ -87,8 +86,8 @@ def test_no_body_in_log(root: Path, tmp_path: Path):
     """The structured log must never carry note body content.
 
     Only metadata: tool name, dir, name, outcome, duration_ms, error_code.
-    Bodies are private (see `docs/http-migration.md` §5.1). The log file
-    must not contain the body string after a create+read cycle.
+    Bodies are private. The log file must not contain the body string
+    after a create+read cycle.
     """
     log_path = tmp_path / "postit.log"
     logger = ToolLogger(str(log_path))

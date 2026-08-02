@@ -7,9 +7,8 @@ server. Default transport is **Streamable HTTP** on `127.0.0.1:8000`
 `--port`/`POSTIT_PORT`); `--transport stdio` is retained as a fallback
 for tests and one-off local sessions. Exits non-zero on bad CLI input.
 
-No auth is configured on any transport (see `docs/http-migration.md`
-§3). HTTP binds loopback only — front it with a TLS-terminating reverse
-proxy if you need remote reach.
+No auth is configured on any transport. HTTP binds loopback only —
+front it with a TLS-terminating reverse proxy if you need remote reach.
 """
 
 from __future__ import annotations
