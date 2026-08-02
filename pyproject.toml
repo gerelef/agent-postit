@@ -1,6 +1,6 @@
 [project]
 name = "agent-postit"
-version = "0.1.0"
+version = "1.0.0"
 description = "Local HTTP MCP server (loopback): agent post-it memory on the filesystem"
 readme = "README.md"
 requires-python = ">=3.12"

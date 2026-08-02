@@ -193,7 +193,7 @@ def _instrument(app: MCPServer, logger: ToolLogger) -> None:
 def build_server(root: Path, *, logger: ToolLogger | None = None) -> MCPServer:
     if logger is None:
         logger = ToolLogger.from_env()
-    app = MCPServer(name="agent-postit", version="0.1.0", instructions=INSTRUCTIONS)
+    app = MCPServer(name="agent-postit", version="1.0.0", instructions=INSTRUCTIONS)
 
     # --- Topic verbs --------------------------------------------------------
     @app.tool(name="topic.create",
