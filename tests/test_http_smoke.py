@@ -119,6 +119,22 @@ def test_initialize_returns_200(http_server):
     assert ctype.startswith("application/json"), ctype
 
 
+def test_initialize_advertises_instructions(http_server):
+    """Stage 3: server `instructions` must reach the client in the
+    `initialize` result so the model ingests the topic-first /(dir, name)/
+    `postit.recent` contract before any `tools/list`. Asserts the field is
+    present, non-empty, and contains the three expected keywords."""
+    status, _ctype, body = _post(http_server, INIT_BODY, JSON_HEADERS)
+    assert status == 200, (status, body)
+    payload = json.loads(body)
+    result = payload.get("result", {})
+    instr = result.get("instructions")
+    assert isinstance(instr, str) and instr, f"instructions missing/empty: {payload!r}"
+    # Keyword smoke — values match INSTRUCTIONS constant in server.py.
+    for keyword in ("topic", "dir, name", "postit.recent"):
+        assert keyword in instr, f"instructions missing {keyword!r}: {instr!r}"
+
+
 def test_missing_content_type_rejected(http_server):
     # The SDK's `TransportSecurityMiddleware` validates Content-Type for
     # every POST independently of `enable_dns_rebinding_protection`, and

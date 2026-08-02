@@ -47,6 +47,26 @@ class TestTopicCreate:
             store.topic_create(root, "t1", "y")
         assert exc.value.code == "dir_exists"
 
+    def test_idempotent_same_args_is_noop(self, root: Path):
+        # Stage-2 idempotence: repeat `topic.create` with the exact same
+        # `dir` + `description` is a no-op success — the existing TOPIC.md
+        # is left untouched and no error is raised. The body on disk is
+        # byte-identical and the size matches.
+        store.topic_create(root, "t1", "same")
+        first_size = (root / "t1" / "TOPIC.md").stat().st_size
+        second = store.topic_create(root, "t1", "same")
+        assert second.dir == "t1"
+        assert second.description == "same"
+        assert (root / "t1" / "TOPIC.md").read_text() == "same"
+        assert (root / "t1" / "TOPIC.md").stat().st_size == first_size
+
+    def test_idempotent_diff_description_still_dir_exists(self, root: Path):
+        # Sanity: idempotence only kicks in for byte-identical args.
+        store.topic_create(root, "t1", "same")
+        with pytest.raises(StoreError) as exc:
+            store.topic_create(root, "t1", "same ")  # trailing space differs
+        assert exc.value.code == "dir_exists"
+
     def test_parent_missing_for_nested(self, root: Path):
         with pytest.raises(StoreError) as exc:
             store.topic_create(root, "a/b", "x")

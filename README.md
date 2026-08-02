@@ -121,10 +121,14 @@ reading/listing/deleting it accepts any case. `TOPIC` is a reserved name
 
 - **`topic.create`** — `dir` (required), `description` (required, may be
   `""`). Creates the directory and writes `TOPIC.md` with the
-  description. Refuses if `dir` already exists (`dir_exists`); refuses if
-  the parent dir is not already a topic (`dir_missing`, with a hint to
-  create the parent first). Topics are built top-down, one level at a
-  time. This is the only way to make a new topic.
+  description. **Idempotent**: a repeat call with the exact same `dir` +
+  `description` byte-matching the existing `TOPIC.md` body is a no-op
+  success (safe to retry). Refuses with `dir_exists` if `dir` already
+  exists but the existing `TOPIC.md` body differs (or `TOPIC.md` is
+  missing — e.g. a stray foreign directory); refuses with `dir_missing`
+  if the parent dir is not already a topic (with a hint to create the
+  parent first). Topics are built top-down, one level at a time. This is
+  the only way to make a new topic.
 - **`topic.read`** — `dir` (required). Returns the `TOPIC.md` body for
   that directory, or `null` if missing.
 - **`topic.write`** — `dir` (required), `description` (required).

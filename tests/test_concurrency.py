@@ -10,7 +10,9 @@ the per-note `threading.RLock` + `asyncio.to_thread` story holds:
   appends (the file body contains every appended fragment, once
   each, in call order — order is serialised by the per-note lock so
   the observable ordering is some permutation of the inputs);
-* parallel `topic.create` of the same dir → exactly one success.
+* parallel `topic.create` of the same dir with differing descriptions
+  → exactly one success (rest `dir_exists`); with identical
+  descriptions → all succeed (idempotent no-op).
 
 These are process-internal: they exercise `build_server` + `call_tool`
 in-process. They do NOT spawn uvicorn — the lock + `to_thread` wiring
@@ -105,15 +107,18 @@ def test_parallel_append_no_lost_writes(server):
 
 
 def test_parallel_topic_create_exactly_one_winner(server):
-    """N concurrent `topic.create` on the same dir name → exactly one
-    succeeds, the rest `dir_exists`. Lock converts the mkdir check-then-
-    create race into a serialised critical section."""
+    """N concurrent `topic.create` on the same dir name with DIFFERING
+    descriptions → exactly one succeeds, the rest `dir_exists`. The lock
+    converts the mkdir check-then-create race into a serialised critical
+    section. (With identical descriptions the call is idempotent and all
+    N would succeed — that case is covered by
+    `test_parallel_topic_create_same_args_idempotent` below.)"""
     N = 8
     async def race():
         return await asyncio.gather(*[
             _gather_call(server, "topic.create",
-                         {"dir": "race-topic", "description": "d"})
-            for _ in range(N)
+                         {"dir": "race-topic", "description": f"d-{i}"})
+            for i in range(N)
         ])
 
     results = _run(race())
@@ -121,6 +126,29 @@ def test_parallel_topic_create_exactly_one_winner(server):
     errs = [r for r in results if isinstance(r, dict) and r.get("code") == "dir_exists"]
     assert len(oks) == 1, f"expected 1 winner, got {len(oks)}: {oks}"
     assert len(errs) == N - 1, f"expected {N-1} dir_exists, got {len(errs)}"
+
+
+def test_parallel_topic_create_same_args_idempotent(server):
+    """N concurrent `topic.create` with identical `dir` + `description` →
+    all N succeed (idempotent no-op for calls 2..N), and the dir +
+    TOPIC.md are created exactly once. Verifies the Stage-2 idempotent
+    `topic.create` semantics hold under the per-dir lock."""
+    N = 8
+    async def race():
+        return await asyncio.gather(*[
+            _gather_call(server, "topic.create",
+                         {"dir": "idem-topic", "description": "same"})
+            for _ in range(N)
+        ])
+
+    results = _run(race())
+    oks = [r for r in results if isinstance(r, dict) and r.get("dir") == "idem-topic"]
+    assert len(oks) == N, (
+        f"idempotent: all {N} should succeed, got {len(oks)}): {results}"
+    )
+    # A follow-up `topic.read` should return the same single description.
+    reread = _run(_gather_call(server, "topic.read", {"dir": "idem-topic"}))
+    assert reread["topic"]["description"] == "same"
 
 
 def test_concurrent_rename_no_orphans(server):

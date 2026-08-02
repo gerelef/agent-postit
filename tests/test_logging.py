@@ -64,12 +64,14 @@ def test_error_call_emits_error_code(root: Path, tmp_path: Path):
     logger = ToolLogger(str(log_path))
     server = build_server(root, logger=logger)
 
-    # Create a topic, then attempt a duplicate -> dir_exists ToolError.
+    # Create a topic, then attempt a conflicting `topic.create` with a
+    # different description -> `dir_exists` ToolError. (Same description
+    # would be an idempotent no-op success as of Stage-2.)
     asyncio.run(
         server.call_tool("topic.create", {"arg": {"dir": "dup", "description": "d"}})
     )
     asyncio.run(
-        server.call_tool("topic.create", {"arg": {"dir": "dup", "description": "d"}})
+        server.call_tool("topic.create", {"arg": {"dir": "dup", "description": "DIFFERENT"}})
     )
     logger.close()
 

@@ -352,7 +352,19 @@ def topic_create(root: Path, dir: str | None, description: str) -> TopicInfo:
     with _with_note_locks(_topic_lock_key(d)):
         target_dir = _dir_path(root, d)
         if target_dir.exists():
-            raise StoreError("dir_exists", f"dir {d!r} already exists")
+            # Idempotence: a repeat `topic.create` with the exact same
+            # `dir` + `description` byte-matching the existing `TOPIC.md`
+            # body is a no-op success. This makes `topic.create` safe to
+            # retry by hosts that use the `idempotentHint` annotation.
+            # Any divergence (no `TOPIC.md`, or body differs) → `dir_exists`.
+            tp = _topic_path(root, d)
+            if not tp.is_file():
+                raise StoreError("dir_exists", f"dir {d!r} already exists without TOPIC.md")
+            existing = _read_text(tp)
+            if existing == description:
+                size, mtime = _stat_size_mtime(tp)
+                return TopicInfo(dir=d, description=description, mtime=mtime, size=size)
+            raise StoreError("dir_exists", f"dir {d!r} already exists with a different description")
 
         target_dir.mkdir(parents=False)
         # `parents=False` would fail if intermediate dirs are missing — but our

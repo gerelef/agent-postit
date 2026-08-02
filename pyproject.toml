@@ -6,8 +6,8 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 dependencies = [
-  "mcp>=1.2",
-  "uvicorn>=0.30",
+  "mcp==2.0.0",
+  "uvicorn==0.52.1",
 ]
 
 [project.scripts]
