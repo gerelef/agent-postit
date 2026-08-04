@@ -15,11 +15,9 @@ another agent) can point at it. Notes are plain Markdown files on your
 disk under `~/.agent-postit/` — nothing is hidden in a database, so you
 can read, grep, and edit them by hand too.
 
-There is **no auth** and **no network exposure**: the server binds the
-loopback interface. Whoever can reach `127.0.0.1` on your machine can
-read and write notes; nobody else can. If you ever want remote reach, put
-a TLS-terminating reverse proxy with auth in front and leave the server
-behind it on loopback.
+There is **no auth**. The server binds on 0.0.0.0, intended for use with podman;
+whoever can reach your machine on the bound port can
+read and write notes. Make sure you bind the image on loopback.
 
 ---
 
